@@ -21,27 +21,6 @@ Step 2: a == tensor([0.8447, 0.3062, 0.2333, 0.2270])
               ^^^ Notice these are different lol ^^^
 '''
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # Up next: match TorchAO's FP8 quantization
 
 # `python setup.py develop` is giving me errors (ssh-ing Lambdalabs)
