@@ -47,7 +47,7 @@ int main() {
     cudaCheck(cudaGetLastError());
 
     // fake gradients
-    float grads_memory[num_parameters] = {0.8530, 0.7153, 0.1018, 0.4003};;
+    float grads_memory[num_parameters] = {0.8530, 0.7153, 0.1018, 0.4003};
     float * d_grads_memory;
     cudaMalloc(&d_grads_memory, sizeof(grads_memory));
     cudaMemcpy(d_grads_memory, grads_memory, sizeof(grads_memory), cudaMemcpyHostToDevice);
