@@ -17,7 +17,7 @@ __device__ inline float lerp(float start, float end, float weight) {
     return fma(weight, end, fma(-weight, start, start));
 }
 
-__global__ void adamw_kernel2(float* params_memory, float* grads_memory, float* m_memory, float* v_memory, long num_parameters,
+__global__ void adamw_kernel(float* params_memory, float* grads_memory, float* m_memory, float* v_memory, long num_parameters,
                               float learning_rate, float beta1, float beta2, float beta1_correction, float beta2_correction, 
                               float eps, float weight_decay) {
 
@@ -75,9 +75,8 @@ int main() {
     float eps = 1e-08;
     float weight_decay = 0.01;
     
-    adamw_kernel2<<<1, num_parameters>>>(d_params_memory, d_grads_memory, d_m_memory, d_v_memory, num_parameters,
-                              learning_rate, beta1, beta2, beta1_correction, beta2_correction, 
-                              eps, weight_decay);
+    adamw_kernel<<<1, num_parameters>>>(d_params_memory, d_grads_memory, d_m_memory, d_v_memory, num_parameters,
+                              learning_rate, beta1, beta2, beta1_correction, beta2_correction, eps, weight_decay);
     cudaCheck(cudaGetLastError());
 
     cudaMemcpy(params_memory, d_params_memory, 4 * sizeof(float), cudaMemcpyDeviceToHost);
