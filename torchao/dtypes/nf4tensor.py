@@ -1,15 +1,21 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import functools
-from dataclasses import dataclass, replace
 import math
-from typing import Dict, Tuple, Any, Optional, Union
 import sys
+from dataclasses import dataclass, replace
 from enum import Enum, auto
+from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
-from torch.distributed.device_mesh import DeviceMesh
 from torch._prims_common import make_contiguous_strides_for
+from torch.distributed.device_mesh import DeviceMesh
 
+from torchao.utils import TORCH_VERSION_AT_LEAST_2_5
 
 aten = torch.ops.aten
 
@@ -422,6 +428,35 @@ def nf4_pin_memory(aten_op, args, kwargs=None):
     return NF4Tensor(*construct_nf4_args(nf4tensor, updated_attrs))
 
 
+@implements(
+    [
+        aten.cat.default,
+    ]
+)
+def nf4_cat(aten_op: torch._ops.OpOverload, args, kwargs=None):
+    tensors_to_cat = args[0]
+    assert all(isinstance(t, torch.Tensor) for t in tensors_to_cat)
+    remaining_args = args[1:]
+
+    ts = []
+    for t in tensors_to_cat:
+        assert isinstance(t, torch.Tensor)
+
+        if isinstance(t, NF4Tensor):
+            ts.append(t.get_original_weight())
+        else:
+            ts.append(t)
+
+    dtype = ts[0].dtype
+    assert all(t.dtype == dtype for t in ts)
+
+    if kwargs is None:
+        kwargs = {}
+
+    tensors = aten_op(ts, *remaining_args, **kwargs)
+    return tensors
+
+
 @dataclass(frozen=True)
 class SubclassTensorArgs:
     original_shape: torch.Size
@@ -661,10 +696,9 @@ class NF4Tensor(torch.Tensor):
     ) -> torch.Tensor:
         """Used to unpack the double quantized scalers
 
-        Args;
+        Args:
             input_tensor: Input tensor to convert to QLoRA format this is the quantized scalers in int8 format
             quantization_factor: Tensor of per_scaler_block quantization factors stored in inpt_weight.dtype
-                size: (n_scaler_blocks)
             scaler_block_size: Scaler block size to use for double quantization.
 
         """
@@ -952,6 +986,7 @@ def linear_nf4(input: torch.Tensor, weight: NF4Tensor) -> torch.Tensor:
 
 
 def to_nf4(tensor, block_size: int = 64, scaler_block_size: int = 256):
+    """Convert a given tensor to normalized float 4-bit tensor."""
     return NF4Tensor.from_tensor(tensor, block_size, scaler_block_size)
 
 
@@ -970,35 +1005,55 @@ def implements_torch_function(torch_function):
 @implements_torch_function(torch.Tensor.to)
 def function_to_dtype(*args, **kwargs):
     tensor = args[0]
-    if isinstance(args[1], torch.dtype):
-        # Tensor.to(dtype, non_blocking, copy, memory_format)
-        return tensor.get_original_weight().to(*args[1:], **kwargs)
-    elif (
-        isinstance(args[1], torch.device)
-        or (
-            isinstance(args[1], str)
-            and (args[1] == "cpu" or args[1].startswith("cuda"))
+    device, dtype, non_blocking, convert_to_format = torch._C._nn._parse_to(
+        *args[1:], **kwargs
+    )
+
+    # dtype is specified -> dequantize
+    if dtype is not None:
+        return tensor.get_original_weight().to(
+            device, dtype, non_blocking, memory_format=convert_to_format
         )
-    ) and len(args) == 2:
-        # Tensor.to(device, non_blocking)
-        device = args[1]
-        updated_attrs = call_from_inner_tensors(tensor, "to", args[1:], kwargs)
-        updated_attrs["device"] = device
-        return NF4Tensor(*construct_nf4_args(tensor, updated_attrs))
-    else:
-        # Tensor.to(device, dtype, non_blocking, copy, memory_format)
-        # Tensor.to(other, non_blocking, copy)
-        raise NotImplementedError(
-            f"NF4Tensor.to({args[1:]}, {kwargs}) is not supported, passing to dispatch"
+
+    # dtype is not specified -> keep NF4
+    updated_attrs = dict(device=device)
+    tensor_attrs, _ = tensor.__tensor_flatten__()
+    for attr in tensor_attrs:
+        inner_tensor = getattr(tensor, attr)
+        updated_attrs[attr] = inner_tensor.to(
+            device, dtype, non_blocking, memory_format=convert_to_format
         )
+    return NF4Tensor(*construct_nf4_args(tensor, updated_attrs))
 
 
 @implements_torch_function(torch.Tensor.cpu)
 def function_cpu(*args, **kwargs):
-    nf4tensor = args[0]
-    updated_attrs = call_from_inner_tensors(nf4tensor, "cpu", args[1:], kwargs)
-    updated_attrs["device"] = "cpu"
-    return NF4Tensor(*construct_nf4_args(nf4tensor, updated_attrs))
+    # Tensor.cpu(self, memory_format)
+    return args[0].to("cpu", *args[1:], **kwargs)
+
+
+@implements_torch_function(torch.Tensor.cuda)
+def function_cuda(*args, **kwargs):
+    # Tensor.cuda(self, device, non_blocking, memory_format)
+    tensor = args[0]
+    updated_attrs = dict()
+    tensor_attrs, _ = tensor.__tensor_flatten__()
+    for attr in tensor_attrs:
+        inner_tensor = getattr(tensor, attr)
+        updated_attrs[attr] = inner_tensor.cuda(*args[1:], **kwargs)
+    updated_attrs["device"] = updated_attrs[tensor_attrs[0]].device
+    return NF4Tensor(*construct_nf4_args(tensor, updated_attrs))
+
+
+@implements_torch_function(F.linear)
+def _(*args, **kwargs):
+    input = args[0]
+    weight = args[1]
+    bias = args[2] if len(args) > 2 else None
+    out = LinearNF4.apply(input, weight)
+    if bias is not None:
+        out = out + bias
+    return out
 
 
 @torch._dynamo.allow_in_graph
@@ -1024,3 +1079,8 @@ def nf4_constructor(
         quantized_data,
         nf4,
     )
+
+
+if TORCH_VERSION_AT_LEAST_2_5:
+    torch.serialization.add_safe_globals([NF4Tensor])
+    torch.serialization.add_safe_globals([NF4Tensor])

@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
+//
+// This source code is licensed under the BSD 3-Clause license found in the
+// LICENSE file in the root directory of this source tree.
 /*
  * Notice: This file was modified by Neuralmagic inc to include 8-bit support
  *
@@ -52,7 +57,7 @@ static constexpr int min_thread_n = 128;
 static constexpr int tile_size = 16;
 static constexpr int max_par = 64;
 
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800 && !defined(USE_ROCM)
 
 template <const int num_bits,         // weight bits
           const int threads,          // number of threads in a threadblock
@@ -401,10 +406,13 @@ __global__ void Marlin_24(
         meta_ptr[i] += m_gl_rd_delta_o;
       }
       // Only fetch scales if this tile starts a new group
-      if (group_blocks != -1 && pipe % (group_blocks / thread_k_blocks) == 0) {
-        int4* sh_s_stage = sh_s + s_sh_stage * pipe;
-        if (s_sh_wr_pred) cp_async4(&sh_s_stage[s_sh_wr], &s[s_gl_rd]);
-        s_gl_rd += s_gl_rd_delta;
+      if constexpr (group_blocks != -1) {
+        if (pipe % (group_blocks / thread_k_blocks) == 0) {
+          int4 *sh_s_stage = sh_s + s_sh_stage * pipe;
+          if (s_sh_wr_pred)
+            cp_async4(&sh_s_stage[s_sh_wr], &s[s_gl_rd]);
+          s_gl_rd += s_gl_rd_delta;
+        }
       }
     }
     // Insert a fence even when we are winding down the pipeline to ensure that
@@ -429,7 +437,7 @@ __global__ void Marlin_24(
     // however, this does not seem to be a significant bottleneck, while some
     // theoretically better attempts have lead to bad instruction ordering by
     // the compiler and correspondingly a noticeable drop in performance.
-    if (group_blocks != -1) {
+    if constexpr (group_blocks != -1) {
       int4* sh_s_stage =
           sh_s + s_sh_stage * ((group_blocks / thread_k_blocks) *
                                (pipe / (group_blocks / thread_k_blocks)));

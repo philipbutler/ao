@@ -15,6 +15,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(googletest)
 
+if (ANDROID_ABI)
+  # We are cross compiling, delay test discovery till runtime
+  set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
+endif()
+
 add_compile_options("-Wall" "-Werror")
 
 include(CMakePrintHelpers)
@@ -29,7 +34,34 @@ add_library(
   ${TORCHAO_LIBRARIES}/torchao/experimental/kernels/cpu/aarch64/valpacking/interleave.cpp
 )
 
+if(NOT TORCHAO_INCLUDE_DIRS)
+  set(TORCHAO_INCLUDE_DIRS ${TORCHAO_LIBRARIES})
+endif()
+
+add_subdirectory(${TORCHAO_LIBRARIES}/torchao/experimental/kernels/cpu/aarch64 ${CMAKE_CURRENT_BINARY_DIR}/torchao_kernels_aarch64)
+
+if(TORCHAO_BUILD_KLEIDIAI)
+  add_compile_definitions(TORCHAO_ENABLE_KLEIDI)
+  add_compile_definitions(TORCHAO_ENABLE_ARM_NEON_DOT)
+endif()
+
+if(TORCHAO_BUILD_ARM_I8MM)
+  add_compile_definitions(TORCHAO_ENABLE_ARM_I8MM)
+endif()
+
 enable_testing()
+
+if (ANDROID_ABI)
+  # Given where we are today this is sufficent. But needs to be revisited.
+  # This is also needed for native builds, but keeping it only for cross builds
+  # for now given the hacky nature.
+  file(GLOB DOTPROD_SRC_FILES test*.cpp)
+  message(SRC_FILES: ${DOTPROD_SRC_FILES})
+  set_property(SOURCE
+    ${DOTPROD_SRC_FILES}
+    APPEND_STRING PROPERTY
+    COMPILE_FLAGS " -march=armv8.2-a+dotprod ")
+endif()
 
 add_executable(test_quantization test_quantization.cpp)
 target_link_libraries(
@@ -61,11 +93,36 @@ target_link_libraries(
     PRIVATE
     GTest::gtest_main
     dep
+    torchao_kernels_aarch64
 )
 
 add_executable(test_valpacking test_valpacking.cpp)
 target_link_libraries(
   test_valpacking
+    PRIVATE
+    GTest::gtest_main
+    dep
+)
+
+add_executable(test_embedding test_embedding.cpp)
+target_link_libraries(
+  test_embedding
+    PRIVATE
+    GTest::gtest_main
+    dep
+)
+
+add_executable(test_weight_packing test_weight_packing.cpp)
+target_link_libraries(
+  test_weight_packing
+    PRIVATE
+    GTest::gtest_main
+    dep
+)
+
+add_executable(test_qmatmul test_qmatmul.cpp)
+target_link_libraries(
+  test_qmatmul
     PRIVATE
     GTest::gtest_main
     dep
@@ -77,3 +134,6 @@ gtest_discover_tests(test_reduction)
 gtest_discover_tests(test_bitpacking)
 gtest_discover_tests(test_linear)
 gtest_discover_tests(test_valpacking)
+gtest_discover_tests(test_embedding)
+gtest_discover_tests(test_weight_packing)
+gtest_discover_tests(test_qmatmul)

@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import gc
 import logging
 import os
@@ -75,7 +80,6 @@ def get_cuda_memory_usage(units="MB", show=True):
 
 
 def export_memory_snapshot(prefix) -> None:
-
     # Prefix for file names.
     timestamp = datetime.now().strftime(TIME_FORMAT_STR)
     file_prefix = f"{prefix}_{timestamp}"
@@ -115,7 +119,6 @@ def trace_handler(
     export_memory_timeline=True,
     print_table=True,
 ):
-
     timestamp = datetime.now().strftime(TIME_FORMAT_STR)
     file_prefix = os.path.join(output_dir, f"{prefix}_{timestamp}")
 

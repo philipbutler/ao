@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import argparse
 import contextlib
 import logging
@@ -163,7 +168,7 @@ def run(args, file_prefix):
     if args.torch_profiler:
         print(f"Finished profiling, outputs saved to {args.output_dir}/{file_prefix}*")
     else:
-        print(f"Finished profiling")
+        print("Finished profiling")
 
 
 if __name__ == "__main__":

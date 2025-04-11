@@ -1,12 +1,10 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import torch
 import torch.nn as nn
-from torchao.float8.config import ScalingType
-from torchao.float8.float8_scaling_utils import (
-    hp_tensor_to_float8_dynamic,
-    NoopFwToFloat8E5M2BwDynamic,
-)
-from torchao.float8.float8_tensor import GemmInputRole
-from torchao.float8.float8_utils import e4m3_dtype
 from torch.distributed._tensor import DTensor
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor.parallel import (
@@ -14,6 +12,14 @@ from torch.distributed.tensor.parallel import (
     PrepareModuleInput,
     RowwiseParallel,
 )
+
+from torchao.float8.config import ScalingType, e4m3_dtype
+from torchao.float8.distributed_utils import tensor_already_casted_to_fp8
+from torchao.float8.float8_scaling_utils import (
+    NoopFwToFloat8BwDynamic,
+    hp_tensor_to_float8_dynamic,
+)
+from torchao.float8.float8_tensor import GemmInputRole
 
 # subclass the ColwiseParallel and RowwiseParallel classes
 # to add the float8 support
@@ -26,8 +32,7 @@ from torch.distributed.tensor.parallel import (
 
 
 def _float8_linear_supports_float8_allgather(m):
-    # TODO(future): add support for delayed scaling for activations
-    # and gradients
+    # TODO(future PR): also gate this by granularity
     return (
         m.scaling_type_input == ScalingType.DYNAMIC
         and m.scaling_type_grad_output == ScalingType.DYNAMIC
@@ -35,6 +40,11 @@ def _float8_linear_supports_float8_allgather(m):
 
 
 class Float8ColwiseParallel(ColwiseParallel):
+    """
+    Like `ColwiseParallel`, but with all-gather in float8. This
+    currently assumes tensorwise scaling.
+    """
+
     @staticmethod
     def _prepare_input_fn(
         input_layouts, desired_input_layouts, mod, inputs, device_mesh
@@ -46,12 +56,13 @@ class Float8ColwiseParallel(ColwiseParallel):
                 input_tensor, device_mesh, input_layouts, run_check=False
             )
 
-        input_tensor = hp_tensor_to_float8_dynamic(
-            input_tensor,
-            e4m3_dtype,
-            mod.linear_mm_config,
-            gemm_input_role=GemmInputRole.INPUT,
-        )  # DTensor(Float8Tensor)
+        if not tensor_already_casted_to_fp8(input_tensor):
+            input_tensor = hp_tensor_to_float8_dynamic(
+                input_tensor,
+                mod.config.cast_config_input.target_dtype,
+                mod.linear_mm_config,
+                gemm_input_role=GemmInputRole.INPUT,
+            )  # DTensor(Float8Tensor)
 
         # transform the input layouts to the desired layouts of ColwiseParallel
         if input_layouts != desired_input_layouts:
@@ -69,7 +80,11 @@ class Float8ColwiseParallel(ColwiseParallel):
             )  # DTensor(torch.Tensor)
 
         # fwd noop bwd cast to DTensor(Float8Tensor)
-        outputs = NoopFwToFloat8E5M2BwDynamic.apply(outputs, mod.linear_mm_config)
+        outputs = NoopFwToFloat8BwDynamic.apply(
+            outputs,
+            mod.linear_mm_config,
+            mod.config.cast_config_grad_output.target_dtype,
+        )
 
         # back to local tensor
         return outputs.to_local() if use_local_output else outputs
@@ -90,6 +105,11 @@ class Float8ColwiseParallel(ColwiseParallel):
 
 
 class Float8RowwiseParallel(RowwiseParallel):
+    """
+    Like `RowwiseParallel`, but with all-gather in float8. This
+    currently assumes tensorwise scaling.
+    """
+
     @staticmethod
     def _prepare_input_fn(
         input_layouts, desired_input_layouts, mod, inputs, device_mesh
@@ -100,12 +120,13 @@ class Float8RowwiseParallel(RowwiseParallel):
                 input_tensor, device_mesh, input_layouts, run_check=False
             )
 
-        input_tensor = hp_tensor_to_float8_dynamic(
-            input_tensor,
-            e4m3_dtype,
-            mod.linear_mm_config,
-            gemm_input_role=GemmInputRole.INPUT,
-        )  # DTensor(Float8Tensor)
+        if not tensor_already_casted_to_fp8(input_tensor):
+            input_tensor = hp_tensor_to_float8_dynamic(
+                input_tensor,
+                mod.config.cast_config_input.target_dtype,
+                mod.linear_mm_config,
+                gemm_input_role=GemmInputRole.INPUT,
+            )  # DTensor(Float8Tensor)
 
         if input_layouts != desired_input_layouts:
             input_tensor = input_tensor.redistribute(
@@ -122,7 +143,11 @@ class Float8RowwiseParallel(RowwiseParallel):
             outputs = outputs.redistribute(placements=output_layouts, async_op=True)
 
         # fwd noop bwd cast to DTensor(Float8Tensor)
-        outputs = NoopFwToFloat8E5M2BwDynamic.apply(outputs, mod.linear_mm_config)
+        outputs = NoopFwToFloat8BwDynamic.apply(
+            outputs,
+            mod.linear_mm_config,
+            mod.config.cast_config_grad_output.target_dtype,
+        )
 
         # back to local tensor if use_local_output is True
         return outputs.to_local() if use_local_output else outputs
@@ -143,18 +168,23 @@ class Float8RowwiseParallel(RowwiseParallel):
 
 
 class PrepareFloat8ModuleInput(PrepareModuleInput):
-    # subclass the PrepareModuleInput classes to implement fp8 specific logic, the only difference is that
-    # after we prepare the input DTensor, we cast the input to DTensor(Float8Tensor)
-    # This is to ensure the float8 cast happens before the all-gather (i.e. Shard -> Replicate)
-    # so that if there are multiple float8 users of the input activation, we perform fp8 allgather
-    # only once.
-    # FP8 Args:
-    #   float8_dtype (torch.dtype, optional): control what float8 dtype to cast to when prepare the module input,
-    #       we currently only support torch.float8_e4m3fn. default: torch.float8_e4m3fn
-    #   fwd_config_submodule_fqn (str, optional): the fqn of the submodule that contains the forward config used
-    #       for the float8 cast. If not specified, we will search for the Float8Linear in the submodules
-    #       and use the forward config from that module, in this case all module's forward config must be
-    #       the same.
+    """
+    Like `PrepareModuleInput`, but with all-gather in float8. This
+    currently assumes tensorwise scaling.
+
+    The only difference from `PrepareModuleInput` is that
+    after we prepare the input DTensor, we cast the input to DTensor(Float8Tensor)
+    This is to ensure the float8 cast happens before the all-gather (i.e. Shard -> Replicate)
+    so that if there are multiple float8 users of the input activation, we perform fp8 allgather
+    only once.
+    FP8 Args:
+      float8_dtype (torch.dtype, optional): control what float8 dtype to cast to when prepare the module input,
+          we currently only support torch.float8_e4m3fn. default: torch.float8_e4m3fn
+      fwd_config_submodule_fqn (str, optional): the fqn of the submodule that contains the forward config used
+          for the float8 cast. If not specified, we will search for the Float8Linear in the submodules
+          and use the forward config from that module, in this case all module's forward config must be
+          the same.
+    """
 
     def __init__(
         self,

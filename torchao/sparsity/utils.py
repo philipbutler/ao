@@ -1,4 +1,8 @@
-import random
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import torch
 from torch.ao.quantization.observer import UniformQuantizationObserverBase
 
@@ -9,33 +13,39 @@ __all__ = [
     "mask_creator",
 ]
 
+
 def create_block_sparse_tensor(M, N, blocksize, sparsity, dtype):
-    assert sparsity <= 1.0 and sparsity >= 0.0, \
-        "sparsity should be a value between 0 and 1"
-    A = torch.bernoulli(torch.full((M//blocksize, N//blocksize),
-                        1 - sparsity, dtype=dtype))
+    assert (
+        sparsity <= 1.0 and sparsity >= 0.0
+    ), "sparsity should be a value between 0 and 1"
+    A = torch.bernoulli(
+        torch.full((M // blocksize, N // blocksize), 1 - sparsity, dtype=dtype)
+    )
     A = torch.repeat_interleave(A, blocksize, dim=0)
     A = torch.repeat_interleave(A, blocksize, dim=1)
     return A.to(dtype).contiguous().cuda()
 
-def create_semi_structured_tensor(
-    r, c, dtype
-):
+
+def create_semi_structured_tensor(r, c, dtype):
     """
     This function returns a 1:2 sparse matrix of size (r, c).
     Note that this means this matrix will also be 2:4 and 4:8 sparse as well.
     """
 
-    choices = [[0, 1], [1, 0]]
-    mask_entries = [random.choice(choices) for i in range(r * c // 2)]
-
+    # Choices are [0, 1] and [1, 0] - this is practically one-hot
+    # encoding for two classes, so for better performance the mask is
+    # built as random selection between these two encodings.
+    choice_indices = torch.randint(0, 2, (r * c // 2,)).cuda()
     mask = (
-        torch.tensor(mask_entries, dtype=dtype)
+        torch.nn.functional.one_hot(choice_indices, num_classes=2)
         .reshape(r, c)
         .contiguous()
-    ).cuda()
-    sparse_weight = torch.rand(r, c).to(dtype).cuda() * mask
-    return sparse_weight
+        .to(torch.int32)
+    )
+
+    sparse_weight = torch.rand(r, c).cuda() * mask
+    return sparse_weight.to(dtype)
+
 
 # Observers
 class PerChannelNormObserver(UniformQuantizationObserverBase):
@@ -52,7 +62,7 @@ class PerChannelNormObserver(UniformQuantizationObserverBase):
             quant_min=None,
             quant_max=None,
             eps=torch.finfo(torch.float32).eps,
-            **kwargs
+            **kwargs,
         )
         # set averaging constant so quantization flow knows observer is memoryless.
         self.averaging_constant = 1.0
@@ -89,14 +99,14 @@ class PerChannelNormObserver(UniformQuantizationObserverBase):
 
 
 def mask_creator(
-        tensor: torch.Tensor,
-        N: int = 2,
-        M: int = 4,
-    ) -> torch.Tensor:
+    tensor: torch.Tensor,
+    N: int = 2,
+    M: int = 4,
+) -> torch.Tensor:
     """
     Class for creating N:M sparsity masks.
-    Masks will be created using the N:M ratio, where for every block of 
-    M weights, N will be pruned based on ranked weight value. Each mask 
+    Masks will be created using the N:M ratio, where for every block of
+    M weights, N will be pruned based on ranked weight value. Each mask
     will correspond to the given tensor.
     :param tensor: The input tensor to create a mask for
     :param N: The number of weights in a group to keep
@@ -107,14 +117,14 @@ def mask_creator(
     # for i, tensor in enumerate(tensors):
     if tensor.numel() % M != 0:
         raise ValueError(
-            f"Tensor of size {tensor.shape} can't be evenly divided into "
-            f"{M} groups")
+            f"Tensor of size {tensor.shape} can't be evenly divided into " f"{M} groups"
+        )
 
     num_groups = tensor.numel() // M
 
     # N:M sparsity for linear layers
     tensor_temp = tensor.detach().abs().reshape(num_groups, M)
-    index = torch.argsort(tensor_temp, dim=1)[:, :int(M - N)]
+    index = torch.argsort(tensor_temp, dim=1)[:, : int(M - N)]
 
     w_b = torch.ones(tensor_temp.shape, device=tensor_temp.device)
     mask = w_b.scatter_(dim=1, index=index, value=0).reshape(tensor.shape)

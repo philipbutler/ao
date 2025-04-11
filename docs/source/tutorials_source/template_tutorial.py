@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 # -*- coding: utf-8 -*-
 
 """
@@ -32,8 +37,9 @@ Template Tutorial
 # -----
 #
 # Example code (the output below is generated automatically):
-# 
+#
 import torch
+
 x = torch.rand(5, 3)
 print(x)
 
@@ -48,7 +54,7 @@ print(x)
 ######################################################################
 # Conclusion
 # ----------
-# 
+#
 # Summarize the steps and concepts covered. Highlight key takeaways.
 #
 # Further Reading

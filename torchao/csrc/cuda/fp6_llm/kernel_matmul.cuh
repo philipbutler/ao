@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
+//
+// This source code is licensed under the BSD 3-Clause license found in the
+// LICENSE file in the root directory of this source tree.
 //    Copyright 2024 FP6-LLM authors
 //
 //    Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,8 +16,12 @@
 //    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //    See the License for the specific language governing permissions and
 //    limitations under the License.
-// 
+//
 // This file is modified from https://github.com/usyd-fsalab/fp6_llm/blob/5df6737cca32f604e957e3f63f03ccc2e4d1df0d/fp6_llm/csrc/include/kernel_matmul.cuh
+//
+// MODIFICATION NOTE (2024-09-25): added SM75 support (https://github.com/pytorch/ao/pull/942):
+// - Added __CUDA_ARCH__ guards such that async operations are only executed for SM80 and up
+//
 
 #include "configs.h"
 #include "utils_gmem.cuh"
@@ -27,8 +36,8 @@
 #define SMEM_SIZE_PER_WARP_1BIT    (WEIGHT_PER_WARP*BIT_WIDTH_1/8)                                            // 512 Bytes,  doubleBuffer not taken into consideration
 #define SMEM_SIZE_PER_WARP_2BIT    (WEIGHT_PER_WARP*BIT_WIDTH_2/8)                                            // 1024 Bytes, doubleBuffer not taken into consideration
 #define SMEM_SIZE_PER_WARP_4BIT    (WEIGHT_PER_WARP*BIT_WIDTH_4/8)                                            // 2048 Bytes, doubleBuffer not taken into consideration
-#define SMEM_SIZE_PER_TB_1BIT      (SMEM_SIZE_PER_WARP_1BIT*TilingConfig::BLOCK_WARPS*PIPELINE_LEVEL_GMEM)    // #WARP=4; Trible-Buffer for 3-level pipeline for A = 6 KB;  double buffer for 2-level pipeline A= 4  KB. 
-#define SMEM_SIZE_PER_TB_2BIT      (SMEM_SIZE_PER_WARP_2BIT*TilingConfig::BLOCK_WARPS*PIPELINE_LEVEL_GMEM)    // #WARP=4; Trible-Buffer for 3-level pipeline for A = 12 KB; double buffer for 2-level pipeline A= 8  KB.   
+#define SMEM_SIZE_PER_TB_1BIT      (SMEM_SIZE_PER_WARP_1BIT*TilingConfig::BLOCK_WARPS*PIPELINE_LEVEL_GMEM)    // #WARP=4; Trible-Buffer for 3-level pipeline for A = 6 KB;  double buffer for 2-level pipeline A= 4  KB.
+#define SMEM_SIZE_PER_TB_2BIT      (SMEM_SIZE_PER_WARP_2BIT*TilingConfig::BLOCK_WARPS*PIPELINE_LEVEL_GMEM)    // #WARP=4; Trible-Buffer for 3-level pipeline for A = 12 KB; double buffer for 2-level pipeline A= 8  KB.
 #define SMEM_SIZE_PER_TB_4BIT      (SMEM_SIZE_PER_WARP_4BIT*TilingConfig::BLOCK_WARPS*PIPELINE_LEVEL_GMEM)    // #WARP=4; Trible-Buffer for 3-level pipeline for A = 24 KB; double buffer for 2-level pipeline A= 16 KB.
 #define SMEM_SIZE_PER_TB_A_TILE    (SMEM_SIZE_PER_TB_1BIT+SMEM_SIZE_PER_TB_2BIT+SMEM_SIZE_PER_TB_4BIT)        // used in fp6_linear.cu, Kernel_Ex().
 /******************** Gloabl Memory Layout For QUANTIZED DATA *******************/
@@ -41,8 +50,9 @@
  * A: row major with ahead-of-time layout transformation, FP6
  * B: col major, FP16
  * C: col major, FP16
- */ 
- template<typename TilingConfig, typename OutputDataType, int EXPONENT, int MANTISSA>
+ */
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
+template<typename TilingConfig, typename InputDataType, typename OutputDataType, int EXPONENT, int MANTISSA>
 __global__ void QUANT_GEMM_Kernel(const uint4* Weight, const half* Scales,
                                   const half *B,
                                   OutputDataType* C,
@@ -63,7 +73,7 @@ __global__ void QUANT_GEMM_Kernel(const uint4* Weight, const half* Scales,
   const uint4* Weight_2bit = Weight_1bit + (USE_SEG_1BIT ? M_Global*K_Global*BIT_WIDTH_1/128 : 0);
   const uint4* Weight_4bit = Weight_2bit + (USE_SEG_2BIT ? M_Global*K_Global*BIT_WIDTH_2/128 : 0);
   // Dynamic shared memory for FP16 A tiles， 128 Bytes aligned
-  extern __shared__ __align__(128) half smem[];   
+  extern __shared__ __align__(128) half smem[];
   half (*smem_array)[WARP_K+PADDING_SHARED_MEM_FOR_B_8] = reinterpret_cast<half (*)[WARP_K+PADDING_SHARED_MEM_FOR_B_8]> ( smem + SMEM_SIZE_PER_TB_A_TILE/2 ); // Dynamic shared memory for FP16 B tiles
   __shared__ half QuantScales[64*TilingConfig::BLOCK_WARPS];  // static shared memory for quantization scales, 64 row per warp * 4 warps = 512 Bytes
   // Thread Block Mapping, considering SplitK
@@ -77,9 +87,9 @@ __global__ void QUANT_GEMM_Kernel(const uint4* Weight, const half* Scales,
   const size_t AverageNumBlock_K = NumBlock_K/Split_K;
   const size_t ExtraNumBlock_K   = NumBlock_K - AverageNumBlock_K * Split_K;
   size_t NumIter = AverageNumBlock_K;
-  size_t StartBlockID_K = AverageNumBlock_K*BatchID;  
+  size_t StartBlockID_K = AverageNumBlock_K*BatchID;
   if(BatchID<ExtraNumBlock_K){
-    NumIter ++; 
+    NumIter ++;
     StartBlockID_K += BatchID;
   }
   else
@@ -128,7 +138,7 @@ __global__ void QUANT_GEMM_Kernel(const uint4* Weight, const half* Scales,
   const half *BTile_GPTR = B + Tile_Start_N * K_Global + StartBlockID_K * TilingConfig::TILE_K;
   for(int i=0; i<PIPELINE_LEVEL_GMEM-1; i++) {
     CopyFromGlobalToShared<TilingConfig::TILE_N, TilingConfig::BLOCK_WARPS> (smem_array+i*TilingConfig::TILE_N, BTile_GPTR, K_Global, NumColumnToCopy);
-    BTile_GPTR += TilingConfig::TILE_K;    
+    BTile_GPTR += TilingConfig::TILE_K;
   }
   // Register Allocation for A,B, and C, Initilazed to Zeros /////////////////////////////////////////////////////////////////////
   constexpr int NumRegSets_a = WARP_ROW_MMA_TENSORS;                                                                  // 1 set = 4 registers, containing a 16*16 MMA block
@@ -140,14 +150,17 @@ __global__ void QUANT_GEMM_Kernel(const uint4* Weight, const half* Scales,
     for(int j=0; j<REG_PER_THREAD_C_TENSOR_16_16; j++)
       c[i][j] = 0.0f;
   //
+  #if __CUDA_ARCH__ >= 800
   cp_async_wait_all();
+  #endif
   __syncthreads();
 
   /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
   uint32_t Scales_RPTR[4]; // 4 Registers per thread for Quantization Scales
   ExtractFromSharedToReg_Scales(Scales_RPTR, QuantScales + WARP_i*64);
   // Initializing the Software Pipeline: writing registers. ////////////////////////////////////////////////////////////////////////////////////////////////
-  initialize_mma_slice<TilingConfig, EXPONENT, MANTISSA>(a, b, AFrag_1BIT_SPTR, AFrag_2BIT_SPTR, AFrag_4BIT_SPTR, smem_array, Scales_RPTR);
+  constexpr bool USE_BF16 = std::is_same<InputDataType, __nv_bfloat16>::value;
+  initialize_mma_slice<TilingConfig, EXPONENT, MANTISSA, USE_BF16>(a, b, AFrag_1BIT_SPTR, AFrag_2BIT_SPTR, AFrag_4BIT_SPTR, smem_array, Scales_RPTR);
   // The outer loop. /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
   #pragma unroll(1)
   for (size_t tile_id_k = 0; tile_id_k < NumIter; tile_id_k++)
@@ -175,14 +188,18 @@ __global__ void QUANT_GEMM_Kernel(const uint4* Weight, const half* Scales,
     if(USE_SEG_4BIT) CopyFromGlobalToShared_A<SMEM_SIZE_PER_WARP_4BIT>(write_SPTR_Frag_4bit, WARP_StartGPTR_A_4BIT, GlobalCopy);
     // copying B tile from GlobalMemory to SharedMemory
     CopyFromGlobalToShared<TilingConfig::TILE_N, TilingConfig::BLOCK_WARPS> (write_SPTR, BTile_GPTR, K_Global, NumColumnToCopy, GlobalCopy);
+    #if __CUDA_ARCH__ >= 800
     cp_async_group_commit();
-    core_mma_slice<TilingConfig, EXPONENT, MANTISSA>(c, a, b, read_SPTR_Frag_1bit, read_SPTR_Frag_2bit, read_SPTR_Frag_4bit, read_SPTR, Scales_RPTR, 1); // read_SPTR_Frag_2bit, read_SPTR_Frag_4bit are different for each WARP; read_SPTR is shared among WARPs
-    core_mma_slice<TilingConfig, EXPONENT, MANTISSA>(c, a, b, read_SPTR_Frag_1bit, read_SPTR_Frag_2bit, read_SPTR_Frag_4bit, read_SPTR, Scales_RPTR, 2);
-    core_mma_slice<TilingConfig, EXPONENT, MANTISSA>(c, a, b, read_SPTR_Frag_1bit, read_SPTR_Frag_2bit, read_SPTR_Frag_4bit, read_SPTR, Scales_RPTR, 3);
+    #endif
+    core_mma_slice<TilingConfig, EXPONENT, MANTISSA, USE_BF16>(c, a, b, read_SPTR_Frag_1bit, read_SPTR_Frag_2bit, read_SPTR_Frag_4bit, read_SPTR, Scales_RPTR, 1); // read_SPTR_Frag_2bit, read_SPTR_Frag_4bit are different for each WARP; read_SPTR is shared among WARPs
+    core_mma_slice<TilingConfig, EXPONENT, MANTISSA, USE_BF16>(c, a, b, read_SPTR_Frag_1bit, read_SPTR_Frag_2bit, read_SPTR_Frag_4bit, read_SPTR, Scales_RPTR, 2);
+    core_mma_slice<TilingConfig, EXPONENT, MANTISSA, USE_BF16>(c, a, b, read_SPTR_Frag_1bit, read_SPTR_Frag_2bit, read_SPTR_Frag_4bit, read_SPTR, Scales_RPTR, 3);
     // Barriers and Synchronizations
+    #if __CUDA_ARCH__ >= 800
     cp_async_wait_group<PIPELINE_LEVEL_GMEM-2>();
+    #endif
     __syncthreads();
-    core_mma_slice<TilingConfig, EXPONENT, MANTISSA>(c, a, b, read2_SPTR_Frag_1bit, read2_SPTR_Frag_2bit, read2_SPTR_Frag_4bit, read2_SPTR, Scales_RPTR, 0);
+    core_mma_slice<TilingConfig, EXPONENT, MANTISSA, USE_BF16>(c, a, b, read2_SPTR_Frag_1bit, read2_SPTR_Frag_2bit, read2_SPTR_Frag_4bit, read2_SPTR, Scales_RPTR, 0);
     // Updating global PTRs
     WARP_StartGPTR_A_1BIT += SMEM_SIZE_PER_WARP_1BIT/16;  // 2KB/16=128 (1)/16: int4*+1 = char*+16
     WARP_StartGPTR_A_2BIT += SMEM_SIZE_PER_WARP_2BIT/16;  // 4KB/16=256 (1)/16: int4*+1 = char*+16
@@ -202,7 +219,26 @@ __global__ void QUANT_GEMM_Kernel(const uint4* Weight, const half* Scales,
     #pragma unroll
     for(size_t j=threadIdx.x%WARP_SIZE; j<TilingConfig::TILE_M; j+=WARP_SIZE) // j-th row
     {
-      if constexpr (std::is_same<OutputDataType, half>::value)   BlockGlobalPTR[j+i*M_Global] = __float2half_rn(smem_CFrag[i][j]);
-      else                                            BlockGlobalPTR[j+i*M_Global] = smem_CFrag[i][j];
+      if constexpr (std::is_same<OutputDataType, half>::value) {
+        BlockGlobalPTR[j+i*M_Global] = __float2half_rn(smem_CFrag[i][j]);
+      } else if constexpr (std::is_same<OutputDataType, __nv_bfloat16>::value) {
+        #if __CUDA_ARCH__ >= 800
+        BlockGlobalPTR[j+i*M_Global] = __float2bfloat16_rn(smem_CFrag[i][j]);
+        #endif
+      } else {
+        BlockGlobalPTR[j+i*M_Global] = smem_CFrag[i][j];
+      }
     }
 }
+#else
+// Stub implementation for older architectures
+template<typename TilingConfig, typename InputDataType, typename OutputDataType, int EXPONENT, int MANTISSA>
+__global__ void QUANT_GEMM_Kernel(const uint4* Weight, const half* Scales,
+                                  const half *B,
+                                  OutputDataType* C,
+                                  const size_t M_Global, const size_t N_Global, const size_t K_Global,
+                                  int Split_K)
+{
+//  NOOP, should never actually be called
+}
+#endif

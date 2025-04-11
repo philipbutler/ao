@@ -1,5 +1,9 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import argparse
-import logging
 from typing import Optional
 
 import torch
@@ -67,7 +71,7 @@ def quantize_model_with_autoround_(
     multi_t_input_ids = MultiTensor(input_ids_lst)
 
     # The optimization is applied during the forward pass
-    out = model(multi_t_input_ids)
+    model(multi_t_input_ids)
 
     # Step 3. Apply the quantization
     quantize_(model, apply_auto_round(), is_target_module, device=device)

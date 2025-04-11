@@ -1,4 +1,10 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import pytest
+
 from torchao.prototype.autoround.utils import is_auto_round_available
 
 if not is_auto_round_available():
@@ -6,13 +12,13 @@ if not is_auto_round_available():
 
 import torch
 from torch.testing._internal.common_utils import (
+    TestCase,
     instantiate_parametrized_tests,
     parametrize,
     run_tests,
-    TestCase,
 )
-from torchao import quantize_
 
+from torchao import quantize_
 from torchao.dtypes import AffineQuantizedTensor
 from torchao.prototype.autoround.core import (
     apply_auto_round,
@@ -85,8 +91,10 @@ def _check_params_and_buffers_type(module, check_fun):
 
 
 class TestAutoRound(TestCase):
-
-    @pytest.mark.skip(not TORCH_VERSION_AT_LEAST_2_5, "Requires torch 2.5 or later")
+    @pytest.mark.skip("these tests are broken on main branch")
+    @pytest.mark.skipif(
+        not TORCH_VERSION_AT_LEAST_2_5, reason="Requires torch 2.5 or later"
+    )
     @parametrize("device", _AVAILABLE_DEVICES)
     @torch.no_grad()
     def test_auto_round(self, device: str):
@@ -95,7 +103,7 @@ class TestAutoRound(TestCase):
             torch.randn(32, 64).to(device),
         )
         m = M().eval().to(device)
-        before_quant = m(*example_inputs)
+        m(*example_inputs)
         prepare_model_for_applying_auto_round_(
             m,
             is_target_module=_is_two_linear,
@@ -127,11 +135,13 @@ class TestAutoRound(TestCase):
         after_quant = m(*example_inputs)
         assert after_quant is not None, "Quantized model forward pass failed"
 
-    @pytest.mark.skip(not TORCH_VERSION_AT_LEAST_2_5, "Requires torch 2.5 or later")
+    @pytest.mark.skip("these tests are broken on main branch")
+    @pytest.mark.skipif(
+        not TORCH_VERSION_AT_LEAST_2_5, reason="Requires torch 2.5 or later"
+    )
     @parametrize("device", _AVAILABLE_DEVICES)
     @torch.no_grad()
     def test_wrap_model_with_multi_tensor(self, device: str):
-
         _is_model_with_inplace_op = lambda mod, fqn: isinstance(mod, ModelWithInplaceOp)
 
         DIM = 128

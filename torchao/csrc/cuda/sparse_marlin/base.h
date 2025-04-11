@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
+//
+// This source code is licensed under the BSD 3-Clause license found in the
+// LICENSE file in the root directory of this source tree.
 /*
  * Copyright (C) 2024 Roberto Lopez Castro (roberto.lopez.castro@udc.es). All
  * Rights Reserved.
@@ -44,7 +49,7 @@ using I4 = Vec<int, 4>;
 // https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#matrix-fragments-for-mma-m16n8k16-with-floating-point-type
 using FragA = Vec<half2, 4>;
 using FragB = Vec<half2, 2>;
-using FragM = Vec<uint, 1>;
+using FragM = Vec<unsigned int, 1>;
 using FragC = Vec<float, 4>;
 using FragS = Vec<half2, 1>;  // quantization scales
 

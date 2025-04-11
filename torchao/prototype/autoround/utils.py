@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 # ==------------------------------------------------------------------------------------------==
 # Utils for the auto-round
 # ==------------------------------------------------------------------------------------------==
@@ -146,7 +151,7 @@ def get_float_model_info(model_name_or_path, torch_dtype=torch.float32):
     logging.warning(f"Detected decoder class: {decoder_cls}")
     if decoder_cls is None:
         raise ValueError(
-            f"Cannot detect the decoder class from the model, please provide it manually."
+            "Cannot detect the decoder class from the model, please provide it manually."
         )
     return model, tokenizer, decoder_cls
 

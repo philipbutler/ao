@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import argparse
 import os
 
@@ -8,9 +13,7 @@ from fused_benchmark_utils import get_benchmark  # , make_data
 def run(args):
     dtype = getattr(torch, args.dtype)
     allow_tf32 = args.allow_tf32
-    fp8_fast_accum = False
     torch.backends.cuda.matmul.allow_tf32 = allow_tf32
-    kernel = args.kernel
     M, N = args.M, args.N
     rank = args.rank
 

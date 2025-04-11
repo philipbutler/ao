@@ -34,28 +34,38 @@ channelwise_8bit_activation_groupwise_lowbit_weight_1x1x32_f32_neondot(
           has_clamp);
 
   std::vector<char> activation_data(
-      activation_data_size<has_weight_zeros>(m, k, group_size));
-  prepare_activation_data<has_weight_zeros>(
+      activation_data_size(m, k, group_size, has_weight_zeros));
+  prepare_activation_data(
       (void*)activation_data.data(),
       m,
       k,
       group_size,
-      test_case.activations.data());
+      test_case.activations.data(),
+      has_weight_zeros);
 
-  std::vector<char> weight_data(
-      weight_data_size<weight_nbit, has_weight_zeros>(n, k, group_size));
-  prepare_weight_data<weight_nbit, has_weight_zeros>(
+  std::vector<char> weight_data(weight_data_size<weight_nbit>(
+      n, k, group_size, has_weight_zeros, has_bias));
+  int8_t* weight_zeros_ptr = nullptr;
+  if (has_weight_zeros) {
+    weight_zeros_ptr = test_case.weight_zeros.data();
+  }
+  float* bias_ptr = nullptr;
+  if (has_bias) {
+    bias_ptr = test_case.bias.data();
+  }
+  prepare_weight_data<weight_nbit>(
       (void*)weight_data.data(),
       n,
       k,
       group_size,
       test_case.weight_qvals.data(),
       test_case.weight_scales.data(),
-      test_case.weight_zeros.data());
+      weight_zeros_ptr,
+      bias_ptr);
 
   std::vector<float> output(m * k);
   for (auto _ : state) {
-    kernel<weight_nbit, has_weight_zeros, has_bias, has_clamp>(
+    kernel<weight_nbit>(
         output.data(),
         /*output_m_stride=*/n,
         m,
@@ -64,9 +74,11 @@ channelwise_8bit_activation_groupwise_lowbit_weight_1x1x32_f32_neondot(
         group_size,
         weight_data.data(),
         activation_data.data(),
-        test_case.bias.data(),
         test_case.clamp_min,
-        test_case.clamp_max);
+        test_case.clamp_max,
+        has_weight_zeros,
+        has_bias,
+        has_clamp);
   }
 }
 
@@ -94,28 +106,38 @@ channelwise_8bit_activation_groupwise_lowbit_weight_1x4x16_f32_neondot(
           has_clamp);
 
   std::vector<char> activation_data(
-      activation_data_size<has_weight_zeros>(m, k, group_size));
-  prepare_activation_data<has_weight_zeros>(
+      activation_data_size(m, k, group_size, has_weight_zeros));
+  prepare_activation_data(
       (void*)activation_data.data(),
       m,
       k,
       group_size,
-      test_case.activations.data());
+      test_case.activations.data(),
+      has_weight_zeros);
 
-  std::vector<char> weight_data(
-      weight_data_size<weight_nbit, has_weight_zeros>(n, k, group_size));
-  prepare_weight_data<weight_nbit, has_weight_zeros>(
+  std::vector<char> weight_data(weight_data_size<weight_nbit>(
+      n, k, group_size, has_weight_zeros, has_bias));
+  int8_t* weight_zeros_ptr = nullptr;
+  if (has_weight_zeros) {
+    weight_zeros_ptr = test_case.weight_zeros.data();
+  }
+  float* bias_ptr = nullptr;
+  if (has_bias) {
+    bias_ptr = test_case.bias.data();
+  }
+  prepare_weight_data<weight_nbit>(
       (void*)weight_data.data(),
       n,
       k,
       group_size,
       test_case.weight_qvals.data(),
       test_case.weight_scales.data(),
-      test_case.weight_zeros.data());
+      weight_zeros_ptr,
+      bias_ptr);
 
   std::vector<float> output(m * k);
   for (auto _ : state) {
-    kernel<weight_nbit, has_weight_zeros, has_bias, has_clamp>(
+    kernel<weight_nbit>(
         output.data(),
         /*output_m_stride=*/n,
         m,
@@ -124,9 +146,11 @@ channelwise_8bit_activation_groupwise_lowbit_weight_1x4x16_f32_neondot(
         group_size,
         weight_data.data(),
         activation_data.data(),
-        test_case.bias.data(),
         test_case.clamp_min,
-        test_case.clamp_max);
+        test_case.clamp_max,
+        has_weight_zeros,
+        has_bias,
+        has_clamp);
   }
 }
 
@@ -154,28 +178,38 @@ channelwise_8bit_activation_groupwise_lowbit_weight_1x8x16_f32_neondot(
           has_clamp);
 
   std::vector<char> activation_data(
-      activation_data_size<has_weight_zeros>(m, k, group_size));
-  prepare_activation_data<has_weight_zeros>(
+      activation_data_size(m, k, group_size, has_weight_zeros));
+  prepare_activation_data(
       (void*)activation_data.data(),
       m,
       k,
       group_size,
-      test_case.activations.data());
+      test_case.activations.data(),
+      has_weight_zeros);
 
-  std::vector<char> weight_data(
-      weight_data_size<weight_nbit, has_weight_zeros>(n, k, group_size));
-  prepare_weight_data<weight_nbit, has_weight_zeros>(
+  std::vector<char> weight_data(weight_data_size<weight_nbit>(
+      n, k, group_size, has_weight_zeros, has_bias));
+  int8_t* weight_zeros_ptr = nullptr;
+  if (has_weight_zeros) {
+    weight_zeros_ptr = test_case.weight_zeros.data();
+  }
+  float* bias_ptr = nullptr;
+  if (has_bias) {
+    bias_ptr = test_case.bias.data();
+  }
+  prepare_weight_data<weight_nbit>(
       (void*)weight_data.data(),
       n,
       k,
       group_size,
       test_case.weight_qvals.data(),
       test_case.weight_scales.data(),
-      test_case.weight_zeros.data());
+      weight_zeros_ptr,
+      bias_ptr);
 
   std::vector<float> output(m * k);
   for (auto _ : state) {
-    kernel<weight_nbit, has_weight_zeros, has_bias, has_clamp>(
+    kernel<weight_nbit>(
         output.data(),
         /*output_m_stride=*/n,
         m,
@@ -184,9 +218,11 @@ channelwise_8bit_activation_groupwise_lowbit_weight_1x8x16_f32_neondot(
         group_size,
         weight_data.data(),
         activation_data.data(),
-        test_case.bias.data(),
         test_case.clamp_min,
-        test_case.clamp_max);
+        test_case.clamp_max,
+        has_weight_zeros,
+        has_bias,
+        has_clamp);
   }
 }
 
@@ -238,6 +274,10 @@ BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x1x32_F32_NEONDOT
     4);
 BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x1x32_F32_NEONDOT(
     5);
+BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x1x32_F32_NEONDOT(
+    6);
+BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x1x32_F32_NEONDOT(
+    7);
 BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x4x16_F32_NEONDOT(
     1);
 BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x4x16_F32_NEONDOT(
@@ -249,6 +289,10 @@ BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x4x16_F32_NEONDOT
 BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x4x16_F32_NEONDOT(
     5);
 BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x4x16_F32_NEONDOT(
+    6);
+BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x4x16_F32_NEONDOT(
+    7);
+BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x4x16_F32_NEONDOT(
     1);
 BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x8x16_F32_NEONDOT(
     2);
@@ -258,6 +302,10 @@ BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x8x16_F32_NEONDOT
     4);
 BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x8x16_F32_NEONDOT(
     5);
+BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x8x16_F32_NEONDOT(
+    6);
+BENCHMARK_CHANNELWISE_8BIT_ACTIVATION_GROUPWISE_LOWBIT_WEIGHT_1x8x16_F32_NEONDOT(
+    7);
 
 // Run the benchmark
 BENCHMARK_MAIN();

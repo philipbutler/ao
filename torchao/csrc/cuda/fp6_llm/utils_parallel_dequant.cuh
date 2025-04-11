@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
+//
+// This source code is licensed under the BSD 3-Clause license found in the
+// LICENSE file in the root directory of this source tree.
 //    Copyright 2024 FP6-LLM authors
 //
 //    Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,7 +16,7 @@
 //    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //    See the License for the specific language governing permissions and
 //    limitations under the License.
-// 
+//
 // This file is modified from https://github.com/usyd-fsalab/fp6_llm/blob/5df6737cca32f604e957e3f63f03ccc2e4d1df0d/fp6_llm/csrc/include/utils_parallel_dequant.cuh
 // To support MSVC, all instances of u_int32_t are changed to uint32_t.
 
@@ -20,6 +25,9 @@
 
 #include <cuda.h>
 #include <cuda_fp16.h>
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+#include <cuda_bf16.h>
+#endif
 #include <cuda_runtime.h>
 
 /*
@@ -27,10 +35,10 @@
  * Outputs: R1, R2
  * Note:    Simplified Exponent calculation is applied.
  */
-template<int EXPONENT, int MANTISSA>
+template<int EXPONENT, int MANTISSA, bool USE_BF16>
 __device__ __forceinline__ void FPx_FP16_Cast_4Way(uint32_t *In, uint32_t *Out1, uint32_t *Out2) {
     //
-    constexpr int RIGHT_SHIFT = 5 - EXPONENT;
+    constexpr int RIGHT_SHIFT = USE_BF16 ? 8 - EXPONENT : 5 - EXPONENT;
     constexpr int MASK1 = 0x80000000;
     constexpr int MASK2 = MASK1 >> EXPONENT + MANTISSA;
     constexpr int MASK3 = MASK2 & 0x7fffffff;
@@ -54,17 +62,36 @@ __device__ __forceinline__ uint32_t MultScale(uint32_t PackedFP16Pair, half Scal
     uint32_t output;
     half* output_half_ptr = reinterpret_cast<half*>(&output);
     output_half_ptr[0] = __hmul( __hmul(*FP16_1,__float2half(1.0f*BIAS)), Scale);
-    output_half_ptr[1] = __hmul( __hmul(*FP16_2,__float2half(1.0f*BIAS)), Scale);   
+    output_half_ptr[1] = __hmul( __hmul(*FP16_2,__float2half(1.0f*BIAS)), Scale);
     return output;
+}
+
+constexpr float power_of_two(int n) {
+    return (n == 0) ? 1.0f : 2.0f * power_of_two(n - 1);
+}
+
+template<int EXPONENT, int MANTISSA>
+__device__ __forceinline__ uint32_t MultScale(uint32_t PackedBF16Pair, __nv_bfloat16 Scale) {
+#if __CUDA_ARCH__ >= 800
+    constexpr int BIAS_OFFSET = (int(1) << (8-1)) - (int(1) << (EXPONENT-1));
+    constexpr float BIAS = power_of_two(BIAS_OFFSET);
+    __nv_bfloat16* BF16_1 = reinterpret_cast<__nv_bfloat16*>(&PackedBF16Pair);
+    __nv_bfloat16* BF16_2 = BF16_1 + 1;
+    uint32_t output;
+    __nv_bfloat16* output_bf16_ptr = reinterpret_cast<__nv_bfloat16*>(&output);
+    output_bf16_ptr[0] = __hmul( __hmul(*BF16_1,__float2bfloat16(BIAS)), Scale);
+    output_bf16_ptr[1] = __hmul( __hmul(*BF16_2,__float2bfloat16(BIAS)), Scale);
+    return output;
+#endif
 }
 
 // MODIFICATION NOTE: to support MSVC
 // - u_int32_t __restrict__ Reg[][4] is changed to below.
 // - u_int32_t __restrict__ *read_RPTR_1bit is changed to below. similarly for read_RPTR_2bit and read_RPTR_4bit
-template<int EXPONENT, int MANTISSA>
-__device__ __forceinline__ void Dequant_32FP6_4Way(uint32_t (* __restrict__ Reg)[4], 
+template<int EXPONENT, int MANTISSA, bool USE_BF16>
+__device__ __forceinline__ void Dequant_32FP6_4Way(uint32_t (* __restrict__ Reg)[4],
                                                    uint32_t  * __restrict__ read_RPTR_1bit,
-                                                   uint32_t  * __restrict__ read_RPTR_2bit, 
+                                                   uint32_t  * __restrict__ read_RPTR_2bit,
                                                    uint32_t  * __restrict__ read_RPTR_4bit,
                                                    uint32_t  *              Scales) {
     // 1+2+4 weight split
@@ -77,10 +104,11 @@ __device__ __forceinline__ void Dequant_32FP6_4Way(uint32_t (* __restrict__ Reg)
     uint32_t *Frag_PTR_1bit = read_RPTR_1bit;
     uint32_t *Frag_PTR_2bit = read_RPTR_2bit;
     uint32_t *Frag_PTR_4bit = read_RPTR_4bit;
-    half      *Scale_RPTR    = reinterpret_cast<half*>(Scales);
+    using scalar_t = typename std::conditional<USE_BF16, __nv_bfloat16, half>::type;
+    scalar_t *Scale_RPTR = reinterpret_cast<scalar_t*>(Scales);
     // Dequantizing 32 FP6, each Loop dequantizing 4 FP6
     #pragma unroll(8)
-    for(int i=0; i<8; i++) { 
+    for(int i=0; i<8; i++) {
         uint32_t Packed_FP6 = 0;
         uint32_t tmp        = 0;
         // 1bit Frag
@@ -104,22 +132,21 @@ __device__ __forceinline__ void Dequant_32FP6_4Way(uint32_t (* __restrict__ Reg)
             if(i%2==1)  Frag_PTR_4bit++;
             else        (*Frag_PTR_4bit) = (*Frag_PTR_4bit) << 4;
         }
-        //
         uint32_t out1, out2;
-        FPx_FP16_Cast_4Way<EXPONENT, MANTISSA>(&Packed_FP6, &out1, &out2);
+        FPx_FP16_Cast_4Way<EXPONENT, MANTISSA, USE_BF16>(&Packed_FP6, &out1, &out2);
         //
-        *OutputRegs = MultScale<EXPONENT, MANTISSA>(out1, Scale_RPTR[0]  );       // Muliply FP16 scales
+        *OutputRegs = MultScale<EXPONENT, MANTISSA>(out1, Scale_RPTR[0]  );       // Muliply FP16/BF16 scales
         OutputRegs += 1;
-        *OutputRegs = MultScale<EXPONENT, MANTISSA>(out2, Scale_RPTR[1]);         // Muliply FP16 scales
+        *OutputRegs = MultScale<EXPONENT, MANTISSA>(out2, Scale_RPTR[1]);       // Muliply FP16/BF16 scales
         OutputRegs += 1;
-        // Updating offset for FP16 scales for every two iterations
+        // Updating offset for FP16/BF16 scales for every two iterations
         if(i%2==1)  Scale_RPTR += 2;
     }
-    
+
 }
 
 /*
- * 
+ *
  */
 __device__ __forceinline__ void ExtractFromSharedToReg_Scales(uint32_t* Scales, half* WARP_SPTR_Scales) {
     int lane_id = threadIdx.x % WARP_SIZE;
@@ -127,8 +154,8 @@ __device__ __forceinline__ void ExtractFromSharedToReg_Scales(uint32_t* Scales, 
     uint32_t tmpReg = SPTR_uint[lane_id];
     #pragma unroll
     for(int i=0; i<4; i++) {
-        // T __shfl_sync(unsigned mask, T var, int srcLane, int width=warpSize); 
-        Scales[i] = __shfl_sync(0xffffffff, tmpReg, i, 4); 
+        // T __shfl_sync(unsigned mask, T var, int srcLane, int width=warpSize);
+        Scales[i] = __shfl_sync(0xffffffff, tmpReg, i, 4);
     }
 }
 

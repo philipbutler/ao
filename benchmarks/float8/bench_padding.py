@@ -1,19 +1,24 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 from dataclasses import dataclass
 from typing import Optional
 
 import fire
-
 import torch
-from torchao.float8.float8_tensor import (
-    GemmInputRole,
-    hp_tensor_and_scale_to_float8,
-    LinearMMConfig,
-    ScaledMMConfig,
-)
-from torchao.float8.float8_utils import pad_tensor_for_matmul
 from tabulate import tabulate
 from torch._inductor.utils import do_bench_using_profiling
 from tqdm import tqdm
+
+from torchao.float8.float8_tensor import (
+    GemmInputRole,
+    LinearMMConfig,
+    ScaledMMConfig,
+    hp_tensor_and_scale_to_float8,
+)
+from torchao.float8.float8_utils import pad_tensor_for_matmul
 
 # estimating TOPs for matmuls in fp32, fp16, fp8
 # assuming A * B = C, with A being M * K, B being K * N, C being M * N

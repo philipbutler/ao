@@ -1,8 +1,16 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import torch
 import triton
 import triton.language as tl
-from triton.ops.matmul import get_higher_dtype, init_to_zero
-from triton.ops.matmul_perf_model import early_config_prune, estimate_matmul_time
+
+from torchao.prototype.common.triton.matmul_perf_model import (
+    early_config_prune,
+    estimate_matmul_time,
+)
 
 from .custom_autotune import Config, autotune, heuristics
 
@@ -15,6 +23,33 @@ TRITON_ACC_TYPES = {
 }
 
 AUTOTUNER_TOP_K = 50
+_ordered_datatypes = [torch.int8, torch.float16, torch.bfloat16, torch.float32]
+
+
+def upcast_if_fp8(a):
+    if "fp8" in str(a):
+        return torch.float16
+    return a
+
+
+def get_higher_dtype(a, b):
+    a = upcast_if_fp8(a)
+    b = upcast_if_fp8(b)
+    if a is b:
+        return a
+
+    assert a in _ordered_datatypes
+    assert b in _ordered_datatypes
+
+    for d in _ordered_datatypes:
+        if a is d:
+            return b
+        if b is d:
+            return a
+
+
+def init_to_zero(name):
+    return lambda nargs: nargs[name].zero_()
 
 
 def set_tuner_top_k(k):
@@ -304,7 +339,6 @@ def triton_mm_launcher(
     output_dtype=None,
     kernel=matmul,
 ):
-
     device = a.device
     # handle non-contiguous inputs if necessary
     # a = grad

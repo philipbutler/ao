@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import torch
 
 
@@ -58,7 +63,6 @@ class TestGaLoreProjector:
         self.ortho_matrix = None
 
     def update_orthogonal_matrix(self, full_rank_grad):
-
         if full_rank_grad.shape[0] >= full_rank_grad.shape[1]:
             self.ortho_matrix = get_orthogonal_matrix(
                 full_rank_grad, self.rank, type="right"
@@ -77,7 +81,6 @@ class TestGaLoreProjector:
         return low_rank_grad
 
     def project_back(self, low_rank_grad):
-
         if low_rank_grad.shape[0] >= low_rank_grad.shape[1]:
             full_rank_grad = torch.matmul(low_rank_grad, self.ortho_matrix)
         else:

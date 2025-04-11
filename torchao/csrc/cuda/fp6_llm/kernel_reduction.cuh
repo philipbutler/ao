@@ -1,3 +1,8 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
+//
+// This source code is licensed under the BSD 3-Clause license found in the
+// LICENSE file in the root directory of this source tree.
 //    Copyright 2024 FP6-LLM authors
 //
 //    Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,7 +16,7 @@
 //    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //    See the License for the specific language governing permissions and
 //    limitations under the License.
-// 
+//
 // This file is copied from https://github.com/usyd-fsalab/fp6_llm/blob/ce76774bcfc26b325c1b558abcf1935026d9abbc/fp6_llm/csrc/include/kernel_reduction.cuh
 
 /***************************************************************************
@@ -36,16 +41,20 @@
 
 #include <cuda.h>
 #include <cuda_fp16.h>
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+#include <cuda_bf16.h>
+#endif
 #include <cuda_runtime.h>
 
 #define REDUCTION_ELEMENT_PER_THREADBLOCK   256
 #define HALF_PER_128BIT                     8
 
-__global__ void SplitK_Reduction(half* C, float* Reduction_Workspace, size_t M_Global, size_t N_Global, int Split_K)
+template <typename T>
+__global__ void SplitK_Reduction(T* C, float* Reduction_Workspace, size_t M_Global, size_t N_Global, int Split_K)
 {
-    half*  WARP_GPTR_C      = C                    + REDUCTION_ELEMENT_PER_THREADBLOCK * blockIdx.x;
+    T*  WARP_GPTR_C         = C                    + REDUCTION_ELEMENT_PER_THREADBLOCK * blockIdx.x;
     float* WARP_GPTR_R      = Reduction_Workspace  + REDUCTION_ELEMENT_PER_THREADBLOCK * blockIdx.x;
-    half*  THREAD_GPTR_C    = WARP_GPTR_C          + threadIdx.x * HALF_PER_128BIT;    
+    T*  THREAD_GPTR_C       = WARP_GPTR_C          + threadIdx.x * HALF_PER_128BIT;
     float* THREAD_GPTR_R    = WARP_GPTR_R          + threadIdx.x * HALF_PER_128BIT;
     // Initializing Thread-Local Results
     float Results[HALF_PER_128BIT];
@@ -58,6 +67,13 @@ __global__ void SplitK_Reduction(half* C, float* Reduction_Workspace, size_t M_G
         THREAD_GPTR_R += M_Global * N_Global;
     }
     // Writing to global memory
-    #pragma unroll
-    for (int i = 0; i < HALF_PER_128BIT; i++)       THREAD_GPTR_C[i] = __float2half_rn(Results[i]);
+    if constexpr (std::is_same<T, half>::value) {
+        #pragma unroll
+        for (int i = 0; i < HALF_PER_128BIT; i++)       THREAD_GPTR_C[i] = __float2half_rn(Results[i]);
+    } else {  // __nv_bfloat16>
+    #if __CUDA_ARCH__ >= 800
+        #pragma unroll
+        for (int i = 0; i < HALF_PER_128BIT; i++)       THREAD_GPTR_C[i] = __float2bfloat16_rn(Results[i]);
+    #endif
+    }
 }

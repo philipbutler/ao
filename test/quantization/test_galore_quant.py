@@ -1,20 +1,29 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import itertools
 
 import pytest
 
 # Skip entire test if triton is not available, otherwise CI failure
-try:
-    import triton
-except ImportError:
-    pytest.skip("triton is not installed", allow_module_level=True)
-
-import bitsandbytes.functional as F
+try:  # noqa: F401
+    import triton  # noqa: F401
+except ImportError:  # noqa: F401
+    pytest.skip("triton is not installed", allow_module_level=True)  # noqa: F401
 import torch
+from bitsandbytes.functional import (
+    create_dynamic_map,
+    dequantize_blockwise,
+    quantize_blockwise,
+)
 
 from torchao.prototype.galore.kernels import (
     triton_dequant_blockwise,
     triton_quantize_blockwise,
 )
+from torchao.testing.utils import skip_if_rocm
 
 SEED = 0
 torch.manual_seed(SEED)
@@ -29,6 +38,7 @@ TEST_CONFIGS = list(itertools.product(DIM1, DIM2, DTYPES, SIGNS, BLOCKSIZE))
 
 
 @pytest.mark.skip("skipping for now, see comments below")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Need CUDA available")
 @pytest.mark.parametrize(
     "dim1,dim2,dtype,signed,blocksize",
     TEST_CONFIGS,
@@ -36,9 +46,9 @@ TEST_CONFIGS = list(itertools.product(DIM1, DIM2, DTYPES, SIGNS, BLOCKSIZE))
 def test_galore_quantize_blockwise(dim1, dim2, dtype, signed, blocksize):
     g = torch.randn(dim1, dim2, device="cuda", dtype=dtype) * 0.01
 
-    qmap = F.create_dynamic_map(signed).to(g.device)
+    qmap = create_dynamic_map(signed).to(g.device)
 
-    ref_bnb, qstate = F.quantize_blockwise(g, code=qmap, blocksize=blocksize)
+    ref_bnb, qstate = quantize_blockwise(g, code=qmap, blocksize=blocksize)
     bnb_norm = (g.reshape(-1, blocksize) / qstate.absmax[:, None]).reshape(g.shape)
 
     tt_q, tt_norm, tt_absmax = triton_quantize_blockwise(
@@ -79,13 +89,15 @@ def test_galore_quantize_blockwise(dim1, dim2, dtype, signed, blocksize):
     "dim1,dim2,dtype,signed,blocksize",
     TEST_CONFIGS,
 )
+@skip_if_rocm("ROCm enablement in progress")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Need CUDA available")
 def test_galore_dequant_blockwise(dim1, dim2, dtype, signed, blocksize):
     g = torch.randn(dim1, dim2, device="cuda", dtype=dtype) * 0.01
 
-    qmap = F.create_dynamic_map(signed).to(g.device)
+    qmap = create_dynamic_map(signed).to(g.device)
 
-    q, qstate = F.quantize_blockwise(g, code=qmap, blocksize=blocksize)
+    q, qstate = quantize_blockwise(g, code=qmap, blocksize=blocksize)
 
-    dq_ref = F.dequantize_blockwise(q, qstate)
+    dq_ref = dequantize_blockwise(q, qstate)
     dq = triton_dequant_blockwise(q, qmap, qstate.absmax, group_size=blocksize)
     assert torch.allclose(dq, dq_ref)

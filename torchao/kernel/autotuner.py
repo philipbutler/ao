@@ -1,7 +1,11 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import logging
 import os
 import pathlib
-import pickle
 
 import torch
 import triton
@@ -173,7 +177,7 @@ def do_bench(fn, args, config, best_time=None):
     # Run it once and skip if it crashes or is 100x slower
     try:
         time = do_bench_basic(wrapped_fn, 1)
-    except RuntimeError as e:
+    except RuntimeError:
         time = None
     except triton.runtime.OutOfResources:
         time = None

@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import pytest
 
 triton = pytest.importorskip(
@@ -13,7 +18,6 @@ BaseQuantizeConfig = hqq_quantize.BaseQuantizeConfig
 import itertools
 
 import torch
-from hqq.core.quantize import BaseQuantizeConfig, HQQLinear, Quantizer
 
 from torchao.prototype.hqq import pack_2xint4, triton_mixed_mm
 

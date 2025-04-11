@@ -1,30 +1,29 @@
 # torchao.float8
 
-This is a workflow for accelerating training with float8 in native PyTorch
-according to the recipes laid out in https://arxiv.org/pdf/2209.05433.pdf.
-The codebase strives to stay small, easily hackable, debuggable with native PyTorch tooling,
+This is a workflow for accelerating training with [float8](https://arxiv.org/pdf/2209.05433.pdf) in native PyTorch.
+With ``torch.compile`` on, we demonstrate e2e pretraining throughput speedups of up to [**1.5x at 512 GPU / 405B parameter count scale**](https://pytorch.org/blog/training-using-float8-fsdp2/),
+and up to [**1.25x at 8 GPU / 8B parameter count scale**](#training-benchmarks).
+The codebase strives to stay small, hackable, debuggable with native PyTorch tooling
 and composable with key systems such as autograd, ```torch.compile``` and distributed.
-With ``torch.compile`` on, initial results show
-throughput speedups of up to 1.5x on 128 GPU LLaMa 3 70B pretraining jobs.
 
-:warning: <em>See the [feature tracker](https://github.com/pytorch/ao/issues/556) for upcoming features.</em>
+ℹ️ <em>See the [feature tracker](https://github.com/pytorch/ao/issues/556) for upcoming features.</em>
 
-:warning: <em>The codebase is stable, but backwards compatibility is not yet guaranteed.</em>
-
-:warning: <em>These APIs are training-only and float8-only, and we plan to [unify them with the rest of torchao](https://github.com/pytorch/ao/issues/894) in the future.</em>
+ℹ️ <em>These APIs are training-only and float8-only, and we plan to [unify them with the rest of torchao](https://github.com/pytorch/ao/issues/894) in the future.</em>
 
 # Single GPU User API
 
-We provide three per-tensor scaling strategies: dynamic, delayed and static.  See https://arxiv.org/pdf/2209.05433.pdf, Section 4.3 for more details. These strategies are configurable separately for activations (`input`), weights (`weight`) and gradients (`grad_output`).
+## float8 linear with dynamic tensorwise scaling
 
-## float8 linear with dynamic scaling for `input`, `weight` and `grad_output`
-
-This is the most accurate recipe as every tensor is scaled dynamically.
+This is the default recipe, with a good balance of performance and accuracy.
 
 ```python
 import torch
 import torch.nn as nn
 from torchao.float8 import convert_to_float8_training
+from torchao.utils import TORCH_VERSION_AT_LEAST_2_5
+
+if not TORCH_VERSION_AT_LEAST_2_5:
+    raise AssertionError("torchao.float8 requires PyTorch version 2.5 or greater")
 
 # create model and sample input
 m = nn.Sequential(
@@ -59,20 +58,18 @@ for _ in range(10):
     optimizer.step()
 ```
 
-## float8 linear with delayed scaling
+## float8 linear with rowwise scaling
 
-This is theoretically the most performant recipe as it minimizes memory reads.
+This is a more accurate recipe compared to tensorwise, with more granular scaling.
 
 ```python
 import torch
 import torch.nn as nn
-from torchao.float8 import (
-    convert_to_float8_training,
-    sync_float8_amax_and_scale_history,
-    Float8LinearConfig,
-    ScalingType,
-    CastConfig,
-)
+from torchao.float8 import convert_to_float8_training, Float8LinearConfig
+from torchao.utils import TORCH_VERSION_AT_LEAST_2_5
+
+if not TORCH_VERSION_AT_LEAST_2_5:
+    raise AssertionError("torchao.float8 requires PyTorch version 2.5 or greater")
 
 # create model and sample input
 m = nn.Sequential(
@@ -82,17 +79,22 @@ m = nn.Sequential(
 x = torch.randn(4096, 2048, device="cuda", dtype=torch.bfloat16)
 optimizer = torch.optim.SGD(m.parameters(), lr=0.1)
 
-# configure delayed scaling
-config = Float8LinearConfig(
-    cast_config_input=CastConfig(scaling_type=ScalingType.DELAYED),
-    cast_config_weight=CastConfig(scaling_type=ScalingType.DELAYED),
-    cast_config_grad_output=CastConfig(scaling_type=ScalingType.DELAYED),
-    # enable_amax_init=False,  # only needed for autocast + compile + FSDP +  float8 delayed
-    # enable_pre_and_post_forward=False  # only needed for autocast + compile + FSDP +  float8 delayed
-)
+# optional: filter modules from being eligible for float8 conversion
+def module_filter_fn(mod: torch.nn.Module, fqn: str):
+    # don't convert the last module
+    if fqn == "1":
+        return False
+    # don't convert linear modules with weight dimensions not divisible by 16
+    if isinstance(mod, torch.nn.Linear):
+        if mod.in_features % 16 != 0 or mod.out_features % 16 != 0:
+            return False
+    return True
 
-# convert all `torch.nn.Linear` modules to `Float8Linear`, specifying custom scaling behavior
-convert_to_float8_training(m, config=config)
+# configure rowwise scaling
+config = Float8LinearConfig.from_recipe_name("rowwise")
+
+# convert specified `torch.nn.Linear` modules to `Float8Linear`
+convert_to_float8_training(m, config=config, module_filter_fn=module_filter_fn)
 
 # enable torch.compile for competitive performance
 m = torch.compile(m)
@@ -102,18 +104,13 @@ for _ in range(10):
     optimizer.zero_grad()
     y = m(x)
     y.sum().backward()
-
-    # specific to float8 with delayed scaling: separate step to sync scales/amaxes
-    # in the future, this may move to a context manager
-    sync_float8_amax_and_scale_history(m)
-
     optimizer.step()
 ```
 
 # Multi GPU User API
 
 We compose with the `DTensor` based [distributed APIs](https://pytorch.org/docs/stable/distributed.tensor.parallel.html),
-such as FSDP, TP and SP. Please see the [torchtitan](https://github.com/pytorch/torchtitan) repository for e2e examples
+such as FSDP, TP and SP. Please see the [torchtitan](https://github.com/pytorch/torchtitan/blob/main/docs/float8.md) repository for e2e examples
 on using `torchao.float8` in a distributed setting.
 
 # Performance
@@ -135,7 +132,7 @@ Example 2 (large shapes):
 To reproduce the raw data for table above, you can run the following script
 
 ```lang=shell
-python benchmarks/float8/float8_roofline.py your_output_filename.csv --gemm_time_strategy benchmarks --shape_gen_name sweep
+python benchmarks/float8/float8_roofline.py your_output_filename.csv --shape_gen_name sweep
 ```
 
 ## Derivation
@@ -158,14 +155,6 @@ There are three observations we can make about the formula above:
 * RHS > 0 for all shapes, bounded by memory bandwidth, framework overhead and compiler limitations
 
 For small shapes, a combination of (2) and (3) leads to speedup < 1.  For medium shapes, (1) and (3) are of similar magnitude and the speedup depends on M, K, N and framework and compiler behavior.  For large shapes, (1) leads to speedup > 1.
-
-## Scaling type vs speedup
-
-Delayed scaling is theoretically faster than dynamic scaling because of reduced read/write traffic requirements.  Today, torch.compile has a couple of limitations (see the performance section of https://github.com/pytorch/ao/issues/556) which prevent us from reaching the optimal behavior for delayed scaling, so the observed performance of delayed scaling is close to that of dynamic scaling. As the torch.compile limitations are fixed, we expect delayed scaling to eventually become more performant compared to dynamic scaling.
-
-## torch.compile behavior vs speedup
-
-There are a couple of limitations in how torch.compile generates float8 scaling and casting kernels (see the performance section of https://github.com/pytorch/ao/issues/556).  As the limitations get resolved, we expect to reach improved performance.
 
 # Testing
 
@@ -202,3 +191,42 @@ python test/float8/test_fsdp2/test_fsdp2.py
 # make sure to turn on torch.compile to get the best performance
 ./benchmarks/float8/bench_linear_float8.py -o ../tmp/test.txt --compile
 ```
+
+### Training benchmarks
+
+[Torchtitan](https://github.com/pytorch/torchtitan) was used to benchmark float8 training performance, for both rowwise
+and tensorwise scaling. The training benchmarks were all run using:
+
+- Single-node training on 8xH100 GPUs
+- Batch size 1
+- Sequence length 8192
+- Steps 100
+- `torch.compile`
+- FSDP2
+- pytorch version: `2.7.0a0+gitb98af95`
+- torchao version: `0.10.0+git890e0ac8`
+- torchtitan version: `0.0.2`
+
+
+| Model         | Scaling                            | Activation checkpointing | Peak Memory (GB)  | Median tokens/second | Speedup over baseline
+| ------------- | ---------------------------------- | ------------------------ | ------------------| -------------------- | ---------------------
+| Llama3-8b     |  none (bfloat16)                   | per op SAC               | 47.65             |  6150                | -
+| Llama3-8b     |  tensorwise with float8 all-gather | per op SAC               | 47.77             |  7689.5              | 25.03%
+| Llama3-8b     |  rowwise with bfloat16 all-gather  | per op SAC               | 47.79             |  6768                | 10.05%
+
+**Important notes**:
+- E2E speedups increase as M,K,N (GEMM dimensions) increase. Speedups as high as 1.5x have been measured with larger shapes ([example](https://pytorch.org/blog/training-using-float8-fsdp2/)).
+- Rowwise scaling is better at handling outliers than tensorwise scaling, so these recipes are different points on the accuracy vs performance curve.
+
+**Reproducing training benchmarks**
+To reproduce these benchmarks, you can follow these steps:
+
+1. On a machine with 8 H100 GPUs, clone torchtitan and follow local installation [steps](https://github.com/pytorch/torchtitan?tab=readme-ov-file#installation),
+including [downloading a tokenizer](https://github.com/pytorch/torchtitan?tab=readme-ov-file#downloading-a-tokenizer).
+2. Install torchao following these [steps](https://github.com/pytorch/ao/tree/main?tab=readme-ov-file#installation).
+3. From the `torchao/float8/benchmarking/` directory, you can run the following commands to reproduce the benchmarks above:
+   - bf16 + compile: `TORCHTITAN_ROOT=<path> ./float8_training_benchmark.sh`
+   - float8 tensorwise with float8 all-gather + compile: `TORCHTITAN_ROOT=<path> FLOAT8_RECIPE_WITH_BEST_SETTINGS="tensorwise" ./float8_training_benchmark.sh`
+   - float8 rowwise with bf16 all-gather + compile: `TORCHTITAN_ROOT=<path> FLOAT8_RECIPE_WITH_BEST_SETTINGS="rowwise" ./float8_training_benchmark.sh`
+
+See the float8 training benchmarking [guide](.torchao/float8/benchmarking/README.md) for more details.

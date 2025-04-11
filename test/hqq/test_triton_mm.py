@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 # Skip entire test if following module not available, otherwise CI failure
 import pytest
 
@@ -5,7 +10,9 @@ triton = pytest.importorskip(
     "triton", minversion="3.0.0", reason="Triton > 3.0.0 required to run this test"
 )
 hqq = pytest.importorskip("hqq", reason="hqq required to run this test")
-hqq_quantize = pytest.importorskip("hqq.core.quantize", reason="hqq required to run this test")
+hqq_quantize = pytest.importorskip(
+    "hqq.core.quantize", reason="hqq required to run this test"
+)
 HQQLinear = hqq_quantize.HQQLinear
 BaseQuantizeConfig = hqq_quantize.BaseQuantizeConfig
 

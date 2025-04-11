@@ -1,14 +1,18 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import dataclasses
 import logging
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import torch
-from torch.utils._pytree import tree_flatten, tree_unflatten
 
 import torchao.prototype.autoround.utils as ar_utils
 import torchao.quantization as ao_quant
-from torchao.dtypes import TensorCoreTiledLayoutType, to_affine_quantized_intx_static
-from torchao.prototype.autoround.multi_tensor import _multi_tensor_config, MultiTensor
+from torchao.dtypes import TensorCoreTiledLayout, to_affine_quantized_intx_static
+from torchao.prototype.autoround.multi_tensor import MultiTensor, _multi_tensor_config
 from torchao.quantization.quant_primitives import ZeroPointDomain
 from torchao.utils import find_multiple
 
@@ -166,6 +170,10 @@ def apply_auto_round():
     More details about the auto-round can be found at https://arxiv.org/abs/2309.05516.
     """
 
+    raise AssertionError(
+        "Please migrate this function to direct configuration, see https://github.com/pytorch/ao/issues/1690 for details"
+    )
+
     def _apply_auto_round(optimized_model: torch.nn.Module):
         """
         The `optimized_model` includes `Linear` layers optimized by auto-round, which includes `qdq_weight`, `scale`, `zp`.
@@ -183,7 +191,7 @@ def apply_auto_round():
                 block_size = (1, observed_linear.group_size)
                 from torchao.dtypes.uintx.uintx import (
                     _BIT_WIDTH_TO_DTYPE,
-                    UintxLayoutType,
+                    UintxLayout,
                 )
                 from torchao.quantization.quant_primitives import ZeroPointDomain
 
@@ -192,7 +200,7 @@ def apply_auto_round():
                 ), f"Invalid bits: {_auto_round_config.bits}"
                 dtype = _BIT_WIDTH_TO_DTYPE[_auto_round_config.bits]
                 pack_dim = -1
-                layout_type = UintxLayoutType(dtype=dtype, pack_dim=pack_dim)
+                _layout = UintxLayout(dtype=dtype, pack_dim=pack_dim)
                 return to_affine_quantized_intx_static(
                     input_float=input_float,
                     scale=scale.to(input_float.dtype),
@@ -202,7 +210,7 @@ def apply_auto_round():
                     quant_min=quant_min,
                     quant_max=quant_max,
                     zero_point_domain=ZeroPointDomain.INT,
-                    layout_type=layout_type,
+                    _layout=_layout,
                 )
 
             def to_int4_tinygemm_weight(input_float):
@@ -256,7 +264,7 @@ def apply_auto_round():
                     quant_min=quant_min,
                     quant_max=quant_max,
                     zero_point_domain=ZeroPointDomain.FLOAT,
-                    layout_type=TensorCoreTiledLayoutType(inner_k_tiles=inner_k_tiles),
+                    _layout=TensorCoreTiledLayout(inner_k_tiles=inner_k_tiles),
                 )
 
             # TODO(Yi): better way to select the weight quantization function

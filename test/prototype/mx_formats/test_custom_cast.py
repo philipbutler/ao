@@ -5,11 +5,9 @@
 # LICENSE file in the root directory of this source tree.
 
 import pytest
-
 import torch
-
-import torchao.prototype.mx_formats.config as config
 from torch.utils._triton import has_triton
+
 from torchao.prototype.mx_formats.constants import (
     DTYPE_FP4,
     DTYPE_FP6_E2M3,
@@ -18,20 +16,23 @@ from torchao.prototype.mx_formats.constants import (
     F6_E2M3_EXP_BIAS,
     F6_E3M2_EXP_BIAS,
 )
-
 from torchao.prototype.mx_formats.custom_cast import (
-    f32_to_f4_unpacked,
-    f32_to_f6_e2m3_unpacked,
-    f32_to_f6_e3m2_unpacked,
     f4_unpacked_to_f32,
     f6_e2m3_unpacked_to_f32,
     f6_e3m2_unpacked_to_f32,
+    f32_to_f4_unpacked,
+    f32_to_f6_e2m3_unpacked,
+    f32_to_f6_e3m2_unpacked,
     get_bits,
     pack_uint4,
+    pack_uint6,
     triton_f4_to_bf16,
+    triton_f6_e2m3_to_bf16,
+    triton_f6_e3m2_to_bf16,
+    triton_to_mxfp8_dim1,
+    triton_to_mxfp8_dim1_reference,
     unpack_uint4,
 )
-
 from torchao.prototype.mx_formats.fp_format_spec import (
     _assert_equals,
     dtype_to_interesting_values,
@@ -42,12 +43,17 @@ from torchao.prototype.mx_formats.fp_format_spec import (
     sem_bits_to_sem_vals,
     sem_vals_to_f32,
 )
-
 from torchao.prototype.mx_formats.mx_tensor import MXTensor
-from torchao.utils import TORCH_VERSION_AT_LEAST_2_4
-
+from torchao.utils import (
+    TORCH_VERSION_AT_LEAST_2_8,
+    is_sm_at_least_89,
+    is_sm_at_least_100,
+)
 
 torch.manual_seed(0)
+
+if not TORCH_VERSION_AT_LEAST_2_8:
+    pytest.skip("Unsupported PyTorch version", allow_module_level=True)
 
 
 @pytest.mark.skip(
@@ -128,9 +134,7 @@ def test_float4_e2m1_table():
         is_denorm = e_enc == "00" and m_enc == "1"
         # get exponent and mantissa
         exp_bias = F4_E2M1_EXP_BIAS
-        fp32 = _sem_enc_to_fp32_val(
-            s_enc, e_enc, m_enc, is_zero, is_denorm, exp_bias
-        )  # noqa: E501
+        fp32 = _sem_enc_to_fp32_val(s_enc, e_enc, m_enc, is_zero, is_denorm, exp_bias)  # noqa: E501
         assert abs(fp32_ref - fp32) < 1e-12
 
 
@@ -148,9 +152,7 @@ def test_float6_e3m2_table():
         is_denorm = e_enc == "000" and m_enc != "00"
         # get exponent and mantissa
         exp_bias = F6_E3M2_EXP_BIAS
-        fp32 = _sem_enc_to_fp32_val(
-            s_enc, e_enc, m_enc, is_zero, is_denorm, exp_bias
-        )  # noqa: E501
+        fp32 = _sem_enc_to_fp32_val(s_enc, e_enc, m_enc, is_zero, is_denorm, exp_bias)  # noqa: E501
         assert abs(fp32_ref - fp32) < 1e-12
 
 
@@ -168,9 +170,7 @@ def test_float6_e2m3_table():
         is_denorm = e_enc == "00" and m_enc != "000"
         # get exponent and mantissa
         exp_bias = F6_E2M3_EXP_BIAS
-        fp32 = _sem_enc_to_fp32_val(
-            s_enc, e_enc, m_enc, is_zero, is_denorm, exp_bias
-        )  # noqa: E501
+        fp32 = _sem_enc_to_fp32_val(s_enc, e_enc, m_enc, is_zero, is_denorm, exp_bias)  # noqa: E501
         assert abs(fp32_ref - fp32) < 1e-12
 
 
@@ -320,7 +320,7 @@ def test_fp4_pack_unpack():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 @pytest.mark.skipif(not has_triton(), reason="unsupported without triton")
-@pytest.mark.skipif(not TORCH_VERSION_AT_LEAST_2_4, reason="requires PyTorch >= 2.4")
+@pytest.mark.skipif(is_sm_at_least_100(), reason="broken on CUDA capability 10.0")
 def test_fp4_triton_unscaled_cast():
     packed_vals = torch.arange(0, 255, dtype=torch.uint8, device="cuda")
     f32_ref = f4_unpacked_to_f32(unpack_uint4(packed_vals))
@@ -330,16 +330,20 @@ def test_fp4_triton_unscaled_cast():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 @pytest.mark.skipif(not has_triton(), reason="unsupported without triton")
-@pytest.mark.skipif(not TORCH_VERSION_AT_LEAST_2_4, reason="requires PyTorch >= 2.4")
+@pytest.mark.skipif(is_sm_at_least_100(), reason="broken on CUDA capability 10.0")
 def test_fp4_triton_scaled_cast():
     size = (256,)
     orig_vals = torch.randn(size, dtype=torch.float, device="cuda") * 100
-    mxtensor = MXTensor.to_mx(orig_vals, block_size=32, elem_dtype=DTYPE_FP4)
+    mxtensor_ref = MXTensor.to_mx(orig_vals, block_size=32, elem_dtype=DTYPE_FP4)
+    mxtensor_triton = MXTensor.to_mx(
+        orig_vals,
+        block_size=32,
+        elem_dtype=DTYPE_FP4,
+        use_fp4_custom_triton_dequant_kernel=True,
+    )
 
-    f32_ref = mxtensor.to_dtype(torch.float)
-    config.use_fp4_custom_triton_dequant_kernel = True
-    f32_triton = mxtensor.to_dtype(torch.float)
-    config.use_fp4_custom_triton_dequant_kernel = False
+    f32_ref = mxtensor_ref.to_dtype(torch.float)
+    f32_triton = mxtensor_triton.to_dtype(torch.float)
     assert torch.all(torch.eq(f32_ref, f32_triton))
 
 
@@ -392,18 +396,23 @@ def test_fp6_values(dtype_name):
     "device",
     [
         "cpu",
-        pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")),
-    ]
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA not available"
+            ),
+        ),
+    ],
 )
 @pytest.mark.parametrize(
     "f32_val,f6_e3m2_enc",
     [
-        (29.0,   0b011111),  # normal round down
-        (26.0,   0b011110),  # normal round to nearest even
+        (29.0, 0b011111),  # normal round down
+        (26.0, 0b011110),  # normal round to nearest even
         (0.1251, 0b000010),  # subnormal round down
         (0.0314, 0b000001),  # subnormal round up
-        (0.03,   0b000000),  # underflow
-    ]
+        (0.03, 0b000000),  # underflow
+    ],
 )
 def test_fp6_e3m2_rounding(f32_val, f6_e3m2_enc, device):
     f6_e3m2_unpacked = f32_to_f6_e3m2_unpacked(torch.tensor(f32_val, device=device))
@@ -411,3 +420,48 @@ def test_fp6_e3m2_rounding(f32_val, f6_e3m2_enc, device):
 
     f6_e3m2_unpacked = f32_to_f6_e3m2_unpacked(torch.tensor(-f32_val, device=device))
     assert f6_e3m2_unpacked.item() == (f6_e3m2_enc | 0b100000)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not has_triton(), reason="unsupported without triton")
+def test_fp6_e2m3_pack_unpack():
+    orig_vals = torch.Tensor([[0.0, 0.5, 7.5, -0.0], [-0.875, 1.0, -6.0, 0.125]]).to(
+        "cuda"
+    )
+    orig_vals_f6_unpacked = f32_to_f6_e2m3_unpacked(orig_vals)
+    orig_vals_f6_packed = pack_uint6(orig_vals_f6_unpacked)
+    assert orig_vals_f6_packed.numel() == (3 * orig_vals.numel() // 4)
+    orig_vals_f6_packed_unpacked = triton_f6_e2m3_to_bf16(orig_vals_f6_packed).to(
+        torch.float32
+    )
+    assert torch.all(orig_vals_f6_packed_unpacked == orig_vals)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not has_triton(), reason="unsupported without triton")
+def test_fp6_e3m2_pack_unpack():
+    orig_vals = torch.Tensor([[0.0, 5.0, 28.0, -0.0], [-0.25, 0.1875, 0.0625, 8.0]]).to(
+        "cuda"
+    )
+    orig_vals_f6_unpacked = f32_to_f6_e3m2_unpacked(orig_vals)
+    orig_vals_f6_packed = pack_uint6(orig_vals_f6_unpacked)
+    assert orig_vals_f6_packed.numel() == (3 * orig_vals.numel() // 4)
+    orig_vals_f6_packed_unpacked = triton_f6_e3m2_to_bf16(orig_vals_f6_packed).to(
+        torch.float32
+    )
+    assert torch.all(orig_vals_f6_packed_unpacked == orig_vals)
+
+
+@pytest.mark.skipif(not has_triton(), reason="unsupported without triton")
+@pytest.mark.skipif(
+    not is_sm_at_least_89(),
+    reason="float8 in triton requires CUDA capability 8.9 or greater",
+)
+@pytest.mark.parametrize("M", (256, 2048))
+@pytest.mark.parametrize("K", (256, 2048))
+def test_triton_mxfp8_dim1_randn(M, K):
+    x = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
+    x_mx_ref, x_s_ref = triton_to_mxfp8_dim1_reference(x, block_size=32)
+    x_mx_t, x_s_t = triton_to_mxfp8_dim1(x, inner_block_size=32)
+    torch.testing.assert_close(x_mx_t, x_mx_ref, rtol=0, atol=0)
+    torch.testing.assert_close(x_s_t, x_s_ref, rtol=0, atol=0)

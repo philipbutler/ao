@@ -1,9 +1,16 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
+from typing import Any, Callable, Dict, Optional
+
 import torch
-from typing import Callable, Optional, Dict, Any
 from torch.utils._python_dispatch import return_and_correct_aliasing
+
 from torchao.utils import (
-    TorchAOBaseTensor,
     TORCH_VERSION_AT_LEAST_2_5,
+    TorchAOBaseTensor,
 )
 
 __all__ = [
@@ -68,7 +75,7 @@ class WeightTensorWithLinearActivationQuantizationMetadata(TorchAOBaseTensor):
         self.quant_kwargs = quant_kwargs
 
     def __repr__(self):
-        return f"LinearActivationQuantizedTensor({self.original_weight_tensor}, {self.input_quant_func_static}, scale={self.scale}, zero_point={self.zero_point}, quant_kwargs={self.quant_kwargs})"
+        return f"{self.__class__.__name__}({self.original_weight_tensor}, {self.input_quant_func_static}, scale={self.scale}, zero_point={self.zero_point}, quant_kwargs={self.quant_kwargs})"
 
     def __tensor_flatten__(self):
         tensor_data = ["original_weight_tensor", "scale"]

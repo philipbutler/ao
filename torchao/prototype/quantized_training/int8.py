@@ -1,12 +1,19 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 from typing import Any, Optional, Tuple
 
 import torch
 from torch import Tensor
 from torch.utils._python_dispatch import return_and_correct_aliasing
 
+from torchao.core.config import AOBaseConfig
+from torchao.quantization.transform_module import (
+    register_quantize_module_handler,
+)
 from torchao.utils import TorchAOBaseTensor
-from torchao.quantization.quant_api import _get_linear_subclass_inserter
-
 
 aten = torch.ops.aten
 c10d_functional = torch.ops.c10d_functional
@@ -14,7 +21,9 @@ _c10d_functional = torch.ops._c10d_functional
 
 
 @torch.no_grad()
-def quantize_int8_rowwise(tensor: Tensor, stochastic_rounding: bool = False):
+def quantize_int8_rowwise(
+    tensor: Tensor, stochastic_rounding: bool = False, eps: float = 1e-12
+):
     """Normal rounding will always round down small changes in weight update. To tackle this problem,
     stochastic rounding can be used, which has a low chance, but not zero, of rounding up. The
     probability of rounding up is equal to x - ⌊x⌋, which indicates how close the value is to the next
@@ -29,8 +38,10 @@ def quantize_int8_rowwise(tensor: Tensor, stochastic_rounding: bool = False):
     """
     # absmax symmetric quantization
     scale = tensor.abs().amax(1) / 127  # same dtype as tensor
-    inv_scale = 1.0 / scale.float().clip(1e-12)
-    tensor = tensor.float() * inv_scale.view(-1, 1)  # slightly faster than divide directly
+    inv_scale = 1.0 / scale.float().clip(eps)
+    tensor = tensor.float() * inv_scale.view(
+        -1, 1
+    )  # slightly faster than divide directly
 
     if stochastic_rounding:
         tensor = (tensor + torch.rand_like(tensor)).floor()
@@ -77,8 +88,12 @@ class Int8QuantizedTrainingLinearWeight(TorchAOBaseTensor):
         return ["int_data", "scale"], []
 
     @classmethod
-    def __tensor_unflatten__(cls, tensor_data_dict, tensor_attributes, outer_size=None, outer_stride=None):
-        return cls(tensor_data_dict["int_data"], tensor_data_dict["scale"], *tensor_attributes)
+    def __tensor_unflatten__(
+        cls, tensor_data_dict, tensor_attributes, outer_size=None, outer_stride=None
+    ):
+        return cls(
+            tensor_data_dict["int_data"], tensor_data_dict["scale"], *tensor_attributes
+        )
 
     @classmethod
     def from_float(cls, tensor: Tensor):
@@ -99,8 +114,22 @@ class Int8QuantizedTrainingLinearWeight(TorchAOBaseTensor):
             f"requires_grad={self.requires_grad})"
         )
 
-    def fsdp_pre_all_gather(self, mesh):
-        return (self.int_data, self.scale), None
+    # FSDP all-gather extension v2
+    # https://github.com/pytorch/pytorch/pull/137005
+    # we need default values so this method still works with PyTorch 2.4 and 2.5
+    def fsdp_pre_all_gather(
+        self,
+        mesh,
+        outer_size=None,
+        outer_stride=None,
+        module=None,
+        mp_policy=None,
+    ):
+        scale = self.scale
+        if mp_policy is not None:
+            scale = scale.to(mp_policy.param_dtype)
+
+        return (self.int_data, scale), None
 
     def fsdp_post_all_gather(
         self,
@@ -116,7 +145,12 @@ class Int8QuantizedTrainingLinearWeight(TorchAOBaseTensor):
 
 class _Int8WeightOnlyLinear(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input: Tensor, weight: Int8QuantizedTrainingLinearWeight, bias: Optional[Tensor] = None):
+    def forward(
+        ctx,
+        input: Tensor,
+        weight: Int8QuantizedTrainingLinearWeight,
+        bias: Optional[Tensor] = None,
+    ):
         ctx.save_for_backward(input, weight)
         ctx.bias = bias is not None
 
@@ -129,8 +163,12 @@ class _Int8WeightOnlyLinear(torch.autograd.Function):
     def backward(ctx, grad_output):
         input, weight = ctx.saved_tensors
 
-        grad_input = (grad_output * weight.scale) @ weight.int_data.to(grad_output.dtype)
-        grad_weight = grad_output.view(-1, weight.shape[0]).T @ input.view(-1, weight.shape[1])
+        grad_input = (grad_output * weight.scale) @ weight.int_data.to(
+            grad_output.dtype
+        )
+        grad_weight = grad_output.view(-1, weight.shape[0]).T @ input.view(
+            -1, weight.shape[1]
+        )
         grad_bias = grad_output.view(-1, weight.shape[0]).sum(0) if ctx.bias else None
         return grad_input, grad_weight, grad_bias
 
@@ -188,13 +226,18 @@ def _(func, types, args, kwargs):
 # out-of-place math ops always return plain tensor
 @implements([aten.sub.Tensor, aten.mul.Tensor])
 def _(func, types, args, kwargs):
-    args = [x.dequantize() if isinstance(x, Int8QuantizedTrainingLinearWeight) else x for x in args]
+    args = [
+        x.dequantize() if isinstance(x, Int8QuantizedTrainingLinearWeight) else x
+        for x in args
+    ]
     return func(*args, **kwargs)
 
 
 @implements(aten.copy_.default)
 def _(func, types, args, kwargs):
-    if isinstance(args[0], Int8QuantizedTrainingLinearWeight) and isinstance(args[1], Int8QuantizedTrainingLinearWeight):
+    if isinstance(args[0], Int8QuantizedTrainingLinearWeight) and isinstance(
+        args[1], Int8QuantizedTrainingLinearWeight
+    ):
         args[0].int_data.copy_(args[1].int_data, **kwargs)
         args[0].scale.copy_(args[1].scale, **kwargs)
 
@@ -226,7 +269,10 @@ def _(func, types, args, kwargs):
     int_data_list = func(int8_weight.int_data, *args[1:], **kwargs)
     scale_list = func(int8_weight.scale, *args[1:], **kwargs)
 
-    out = [Int8QuantizedTrainingLinearWeight(int_data, scale) for int_data, scale in zip(int_data_list, scale_list)]
+    out = [
+        Int8QuantizedTrainingLinearWeight(int_data, scale)
+        for int_data, scale in zip(int_data_list, scale_list)
+    ]
     return out
 
 
@@ -255,5 +301,19 @@ def _(func, types, args, kwargs):
     return return_and_correct_aliasing(func, args, kwargs, out)
 
 
-def int8_weight_only_quantized_training():
-    return _get_linear_subclass_inserter(Int8QuantizedTrainingLinearWeight.from_float, allow_requires_grad=True)
+class Int8WeightOnlyQuantizedTrainingConfig(AOBaseConfig):
+    pass
+
+
+# for bc
+int8_weight_only_quantized_training = Int8WeightOnlyQuantizedTrainingConfig
+
+
+@register_quantize_module_handler(Int8WeightOnlyQuantizedTrainingConfig)
+def _int8_weight_only_quantized_training_transform(
+    module: torch.nn.Module,
+    config: Int8WeightOnlyQuantizedTrainingConfig,
+) -> torch.nn.Module:
+    new_weight = Int8QuantizedTrainingLinearWeight.from_float(module.weight)
+    module.weight = torch.nn.Parameter(new_weight, requires_grad=True)
+    return module

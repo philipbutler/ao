@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
 import torch
 import triton
 import triton.language as tl
@@ -157,8 +162,6 @@ def make_data(M, N, rank, dtype):
 
 
 if __name__ == "__main__":
-    from triton.testing import do_bench
-
     M = N = 4096
     rank = 128
     dtype = torch.float32
